@@ -1,5 +1,5 @@
 [package]
-name = "d3d9-inject-rs-template"
+name = "d3d9-inject-suba-rs"
 version = "0.1.0"
 edition = "2021"
 
@@ -17,6 +17,7 @@ lazy_static = "1.4.0"
 anyhow = "1.0.66"
 libloading = "0.7"
 widestring = "1.0.2"
+keyboard_query = "0.1.0"
 
 [profile.release]
 panic = "abort"

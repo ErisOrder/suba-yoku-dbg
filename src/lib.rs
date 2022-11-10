@@ -1,15 +1,18 @@
 #![cfg(windows)]
 
+use std::sync::Mutex;
 use winapi::shared::minwindef::{BOOL, DWORD, HINSTANCE, LPVOID, UINT, TRUE};
 use winapi::shared::d3d9::IDirect3D9;
 use lazy_static::lazy_static;
 
 mod wrappers;
+mod util;
 
 type D3D9CreateFn = unsafe extern "stdcall" fn(UINT) -> *mut IDirect3D9;
 
 lazy_static! {
     static ref D3D9_LIB: libloading::Library = {
+        println!("Loading D3D9 lib");
         let mut sys_dir = wrappers::get_system_directory();
         sys_dir.push_str("\\d3d9.dll");
         unsafe { libloading::Library::new(sys_dir).expect("failed to load d3d9 library") }
@@ -20,10 +23,13 @@ lazy_static! {
     };
 }
 
+static TRANSLATION_ACTIVE: Mutex<bool> = Mutex::new(true);
+
 /// Proxy function for passing call to real d3d9 lib
 #[no_mangle]
 #[allow(non_snake_case)]
 extern "stdcall" fn Direct3DCreate9(sdk_version: UINT) -> *mut IDirect3D9 {
+    
     unsafe { D3D9_CREATE(sdk_version) }
 }
 
@@ -63,6 +69,20 @@ fn dll_init() {
         &info.to_string(), std::backtrace::Backtrace::capture());
         wrappers::simple_message_box("Panic", &msg);
     }));
+
+    std::thread::spawn(|| {
+        let mut listener = util::KeyListener::new();
+
+        listener.register_cb('T' as u16, || {
+            if let Ok(mut b) = TRANSLATION_ACTIVE.lock() {
+                *b = !*b;
+                if *b { println!("Translation active"); } 
+                else { println!("Translation disabled"); }
+            }
+        });
+
+        listener.listen();
+    });
     
     wrappers::alloc_console();
 }
