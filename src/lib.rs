@@ -1,6 +1,5 @@
 #![cfg(windows)]
 
-use std::sync::Mutex;
 use winapi::shared::minwindef::{BOOL, DWORD, HINSTANCE, LPVOID, UINT, TRUE};
 use winapi::shared::d3d9::IDirect3D9;
 use lazy_static::lazy_static;
@@ -26,8 +25,6 @@ lazy_static! {
     static ref BASE_ADDR: usize = wrappers::get_base_mod_addr()
         .expect("failed to get base module (exe itself) address") as usize;
 }
-
-static TRANSLATION_ACTIVE: Mutex<bool> = Mutex::new(true);
 
 /// Proxy function for passing call to real d3d9 lib
 #[no_mangle]
@@ -73,23 +70,35 @@ fn dll_init() {
         wrappers::simple_message_box("Panic", &msg);
     }));
 
+    std::env::set_var("RUST_LOG", "debug");
+    pretty_env_logger::init();
+
+    unsafe {
+        hooks::hook_sq_printf(*BASE_ADDR)
+            .expect("failed to install hook");
+        println!("printf hook installed");
+
+        hooks::hook_text(*BASE_ADDR)
+            .expect("failed to install hook");
+        println!("text hook installed");
+    }
+
     std::thread::spawn(|| {
         let mut listener = util::KeyListener::new();
 
         listener.register_cb('T' as u16, || {
-            if let Ok(mut b) = TRANSLATION_ACTIVE.lock() {
+            if let Ok(mut b) = hooks::TEXT_HOOK_ACTIVE.lock() {
                 *b = !*b;
-                if *b { println!("Translation active"); } 
-                else { println!("Translation disabled"); }
+                if *b { println!("text (strcpy?) hook active"); } 
+                else { println!("text (strcpy?) hook disabled"); }
             }
         });
 
         listener.register_cb('H' as u16, || {
-            unsafe { 
-                println!("base mod: {:X}", *BASE_ADDR);
-
-                hooks::hook_sq_printf(*BASE_ADDR)
-                    .expect("failed to install hook");
+            if let Ok(mut b) = hooks::PRINTF_HOOK_ACTIVE.lock() {
+                *b = !*b;
+                if *b { println!("printf hook active"); } 
+                else { println!("printf hook disabled"); }
             }
         });
 
