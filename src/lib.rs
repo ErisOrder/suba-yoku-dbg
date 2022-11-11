@@ -7,6 +7,7 @@ use lazy_static::lazy_static;
 
 mod wrappers;
 mod util;
+mod hooks;
 
 type D3D9CreateFn = unsafe extern "stdcall" fn(UINT) -> *mut IDirect3D9;
 
@@ -21,6 +22,9 @@ lazy_static! {
     static ref D3D9_CREATE: libloading::Symbol<'static, D3D9CreateFn> = unsafe {
         D3D9_LIB.get(b"Direct3DCreate9").expect("failed to get Direct3DCreate9 address")
     };
+
+    static ref BASE_ADDR: usize = wrappers::get_base_mod_addr()
+        .expect("failed to get base module (exe itself) address") as usize;
 }
 
 static TRANSLATION_ACTIVE: Mutex<bool> = Mutex::new(true);
@@ -78,6 +82,15 @@ fn dll_init() {
                 *b = !*b;
                 if *b { println!("Translation active"); } 
                 else { println!("Translation disabled"); }
+            }
+        });
+
+        listener.register_cb('H' as u16, || {
+            unsafe { 
+                println!("base mod: {:X}", *BASE_ADDR);
+
+                hooks::hook_sq_printf(*BASE_ADDR)
+                    .expect("failed to install hook");
             }
         });
 
