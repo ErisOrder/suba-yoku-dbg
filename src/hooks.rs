@@ -2,43 +2,46 @@ use dynasmrt::{dynasm, DynasmApi};
 use region::Protection;
 use anyhow::Result;
 
+const CALL_SIZE: usize = 5;
+
 const SQ_PRINTF_OFFSET: usize = 0x7AF0E;
+const SQ_HOOK_SIZE: usize = 6;
+
 const BASE_OFFSET: usize = 0x1000 - 0x400; // DataOffset - HeaderSize
 
-/// NAKED void sq_printf_hook() {
-///     __asm {
-///         mov  eax, dword ptr ds : [eax + 0x124] //original
-/// 
-///         // alloc stack
-///         push ebp;
-///         mov  ebp, esp;
-///         sub  esp, 0x200;
-///         pushad; // save all regs
-///     }
-///     //================= USER CODE ================
-///     char* p_str;
-/// 
-///     __asm {
-///         mov eax,  [ebp + 12];
-///         mov p_str, eax;
-///     }
-/// 
-///     std::cout << p_str;
-/// 
-/// 
-///     //============================================
-///     __asm {
-///         popad; // restore all regs
-///         mov  esp, ebp;
-///         pop  ebp;
-///         ret;
-///     }
-/// }
+unsafe fn fixup_addr(base_addr: usize, offset: usize) -> usize {
+    base_addr + offset + BASE_OFFSET
+}
+
+unsafe fn place_call_hook(call_from: usize, call_to: usize, hook_size: usize) -> Result<()> {
+    let call_addr = call_to - (call_from + CALL_SIZE);
+    let nops = hook_size - CALL_SIZE;
+
+    let mut ops = dynasmrt::x86::Assembler::new().unwrap();
+
+    let offset = ops.offset();
+    dynasm! { ops
+        ; call call_addr as _
+    };
+
+    for _ in 0..nops {
+        dynasm! { ops
+            ; nop
+        };
+    }
+
+    let buf = ops.finalize().unwrap();
+    let ptr = buf.ptr(offset);
+
+    region::protect(call_from as *const u8, 4096, Protection::READ_WRITE_EXECUTE)?;
+    std::ptr::copy(ptr, call_from as *mut u8, buf.len());
+
+    Ok(())
+}
 
 #[allow(clippy::fn_to_numeric_cast)]
 pub unsafe fn hook_sq_printf(base_addr: usize) -> Result<()> {
     let mut asm_func = dynasmrt::x86::Assembler::new().unwrap();
-    let mut asm_hook = dynasmrt::x86::Assembler::new().unwrap();
 
     unsafe extern "stdcall" fn _print(s: *mut u8) {
         let len = libc::strlen(s as *const std::ffi::c_char);
@@ -47,6 +50,7 @@ pub unsafe fn hook_sq_printf(base_addr: usize) -> Result<()> {
         print!("{s}");
     }
 
+    // TODO: maybe make this a macros
     let func = asm_func.offset();
     dynasm! { asm_func
         ; .arch x86
@@ -70,25 +74,10 @@ pub unsafe fn hook_sq_printf(base_addr: usize) -> Result<()> {
     let func_buf = asm_func.finalize().unwrap();
     let func_ptr = func_buf.ptr(func);
 
-    // TODO: split call making to separate function
-    let from_offset = base_addr + SQ_PRINTF_OFFSET + BASE_OFFSET;
+    let from_offset = fixup_addr(base_addr, SQ_PRINTF_OFFSET);
     let to_offset = func_ptr as usize;
 
-    let call_addr = to_offset - (from_offset + 5);
-
-    let hook = asm_hook.offset();
-    dynasm! { asm_hook
-        ; .arch x86 
-        ; call call_addr as _
-        ; nop
-    };
-
-    let hook_buf = asm_hook.finalize().unwrap();
-    let hook_ptr = hook_buf.ptr(hook);
-
-    region::protect(from_offset as *const u8, 4096, Protection::READ_WRITE_EXECUTE)?;
-    
-    std::ptr::copy(hook_ptr, from_offset as *mut u8, hook_buf.len());
+    place_call_hook(from_offset, to_offset, SQ_HOOK_SIZE)?;
 
     std::mem::forget(func_buf);
 

@@ -33,7 +33,6 @@ static TRANSLATION_ACTIVE: Mutex<bool> = Mutex::new(true);
 #[no_mangle]
 #[allow(non_snake_case)]
 extern "stdcall" fn Direct3DCreate9(sdk_version: UINT) -> *mut IDirect3D9 {
-    
     unsafe { D3D9_CREATE(sdk_version) }
 }
 
