@@ -24,8 +24,7 @@ lazy_static! {
         D3D9_LIB.get(b"Direct3DCreate9").expect("failed to get Direct3DCreate9 address")
     };
 
-    static ref BASE_ADDR: usize = wrappers::get_base_mod_addr()
-        .expect("failed to get base module (exe itself) address") as usize;
+
 }
 
 /// Proxy function for passing call to real d3d9 lib
@@ -78,15 +77,15 @@ fn dll_init() {
     wrappers::alloc_console();
 
     unsafe {
-        hooks::hook_sq_printf(*BASE_ADDR)
+        hooks::hook_sq_printf()
             .expect("failed to install hook");
         println!("printf hook installed");
 
-        hooks::hook_text(*BASE_ADDR)
+        hooks::hook_text()
             .expect("failed to install hook");
         println!("text hook installed");
 
-        hooks::hook_bind(*BASE_ADDR)
+        hooks::hook_bind()
             .expect("failed to install hook");
         println!("bind hook installed");
     }

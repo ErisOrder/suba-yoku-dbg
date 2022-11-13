@@ -3,9 +3,9 @@ use dynasmrt::{dynasm, DynasmApi, AssemblyOffset};
 use log::debug;
 use region::Protection;
 use anyhow::Result;
-use squirrel2_rs::SQInteger;
+use lazy_static::lazy_static;
 
-use crate::{sq, sq_gen_func};
+use crate::{sq, sq_gen_func, wrappers};
 
 const CALL_SIZE: usize = 5;
 
@@ -22,10 +22,15 @@ const SQ_BIND_FN_OFFSET: usize = 0xB5F0;
 
 const BASE_OFFSET: usize = 0x1000 - 0x400; // DataOffset - HeaderSize
 
+lazy_static! {
+    static ref BASE_ADDR: usize = wrappers::get_base_mod_addr()
+        .expect("failed to get base module (exe itself) address") as usize;
+}
+
 pub static TEXT_HOOK_ACTIVE: Mutex<bool> = Mutex::new(false);
 pub static PRINTF_HOOK_ACTIVE: Mutex<bool> = Mutex::new(true);
 
-unsafe fn fixup_addr(base_addr: usize, offset: usize) -> usize {
+fn fixup_addr(base_addr: usize, offset: usize) -> usize {
     base_addr + offset + BASE_OFFSET
 }
 
@@ -62,115 +67,55 @@ unsafe fn _hook(base_addr: usize, hook_off: usize, hook_size: usize, asm: dynasm
     let from_offset = fixup_addr(base_addr, hook_off);
     let to_offset = func_ptr as usize;
 
-    place_call_hook(from_offset, to_offset, hook_size)?;
+    unsafe { 
+        place_call_hook(from_offset, to_offset, hook_size)?;
+    }
 
     std::mem::forget(func_buf);
 
     Ok(())
 }
 
-macro_rules! prologue {
-    ($ops:ident, $stack_size:expr) => {
-        dynasm! { $ops
-            ; .arch x86
-            ; push ebp
-            ; mov  ebp, esp
-            ; sub  esp, $stack_size
-            ; pushad
-        };
-    };
-}
-
-macro_rules! epilogue {
-    ($ops:ident) => {
-        dynasm! { $ops
-            ; .arch x86
-            ; popad
-            ; mov  esp, ebp
-            ; pop  ebp
-        };
-    };
-}
-
-macro_rules! _gen_hook {
-    ( $hook_name:ident, $hook_off:expr, $hook_size:expr,
-      asm { $($asm:tt)* },
-      inner { $($inner:tt)* }
+macro_rules! gen_hook {
+    ( $hook_name:ident, $hook_off:expr, $hook_size:expr, $stack_size:expr,
+      $( prolog { $( $prolog:tt )* } )?
+      $( body  { $( $asm:tt )* } )?
+      $( epilog { $( $epilog:tt )* } )?
+      $( inner { $( $inner:tt )* } )?
     ) => {
         #[allow(clippy::fn_to_numeric_cast)]
-        pub unsafe fn $hook_name(base_addr: usize) -> Result<()> {
-            $($inner)*
+        pub unsafe fn $hook_name() -> Result<()> {
+
+            $( $( $inner )* )?
+
             let mut $hook_name = dynasmrt::x86::Assembler::new().unwrap();
             let func = $hook_name.offset();
             
-            dynasm! { $hook_name
-                $($asm)*
-            };
+            unsafe {
+                dynasm! { $hook_name
+                    ; .arch x86
 
-            _hook(base_addr, $hook_off, $hook_size, $hook_name, func)
+                    $( $( $prolog )* )?
+
+                    ; push ebp
+                    ; mov  ebp, esp
+                    ; sub  esp, $stack_size
+                    ; pushad
+
+                    $( $( $asm )* )?
+
+                    ; popad
+                    ; mov  esp, ebp
+                    ; pop  ebp
+
+                    $( $( $epilog )* )?
+
+                    ; ret
+                };
+
+                _hook(*BASE_ADDR, $hook_off, $hook_size, $hook_name, func)
+            }
         }
-    };
-}
-
-macro_rules! gen_hook {
-    ( $hook_name:ident, $hook_off:expr, $hook_size:expr, $stack_size:expr,
-      body  { $($asm:tt)* }
-      inner { $($inner:tt)* }
-    ) => {
-        _gen_hook! { $hook_name, $hook_off, $hook_size, asm {
-            ; .arch x86
-            ;; prologue!($hook_name, $stack_size) 
-            $($asm)*
-            ;; epilogue!($hook_name)
-            ; ret
-        }, inner { $($inner)* } }
-    };
-
-    ( $hook_name:ident, $hook_off:expr, $hook_size:expr, $stack_size:expr,
-      prolog { $($prolog:tt)* }
-      body  { $($asm:tt)* }
-      inner { $($inner:tt)* }
-    ) => {
-        _gen_hook! { $hook_name, $hook_off, $hook_size, asm {
-            ; .arch x86
-            $($prolog)*
-            ;; prologue!($hook_name, $stack_size) 
-            $($asm)*
-            ;; epilogue!($hook_name)
-            ; ret
-        }, inner { $($inner)* } }
-    };
-
-    ( $hook_name:ident, $hook_off:expr, $hook_size:expr, $stack_size:expr,
-      prolog { $($prolog:tt)* }
-      body  { $($asm:tt)* }
-      epilog { $($epilog:tt)* }
-      inner { $($inner:tt)* }
-    ) => {
-        _gen_hook! { $hook_name, $hook_off, $hook_size, asm {
-            ; .arch x86
-            $($prolog)*
-            ;; prologue!($hook_name, $stack_size) 
-            $($asm)*
-            ;; epilogue!($hook_name)
-            $($epilog)*
-            ; ret
-        }, inner { $($inner)* } }
-    };
-
-    ( $hook_name:ident, $hook_off:expr, $hook_size:expr, $stack_size:expr,
-        body  { $($asm:tt)* }
-        epilog { $($epilog:tt)* }
-        inner { $($inner:tt)* }
-    ) => {
-        _gen_hook! { $hook_name, $hook_off, $hook_size, asm {
-            ; .arch x86
-            ;; prologue!($hook_name, $stack_size) 
-            $($asm)*
-            ;; epilogue!($hook_name)
-            $($epilog)*
-            ; ret
-        }, inner { $($inner)* } }
     };
 }
 
@@ -240,11 +185,11 @@ gen_hook! {
     prolog {
         ; pop DWORD [&mut RET_ADDR as *mut usize as i32]
         ; mov DWORD [&mut SQ_TAB_PTR as *mut usize as i32], ecx
-        ; mov eax, DWORD fixup_addr(*crate::BASE_ADDR, SQ_BIND_FN_OFFSET) as _
+        ; mov eax, DWORD fixed_bind_fn as _
         ; call eax 
     }
     body {    
-        ; push DWORD fixup_addr(*crate::BASE_ADDR, SQ_BIND_FN_OFFSET) as _
+        ; push DWORD fixed_bind_fn as _
         ; mov edx, DWORD bind as _
         ; call edx       
     }
@@ -254,6 +199,8 @@ gen_hook! {
     inner {
         static mut RET_ADDR: usize = 0;
         static mut SQ_TAB_PTR: usize = 0;
+
+        let fixed_bind_fn = fixup_addr(*BASE_ADDR, SQ_BIND_FN_OFFSET);
 
         unsafe extern "stdcall" fn bind(func_: *const u8) {
             debug!(target: "bind_hook", "called stub, sq ptr: 0x{:X}", SQ_TAB_PTR);
@@ -277,6 +224,3 @@ sq_gen_func! {
         777
     }
 }
-
-
-

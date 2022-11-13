@@ -42,10 +42,10 @@ impl SqVar for SQInteger {
 /// 
 #[macro_export]
 macro_rules! sq_gen_func {
-    // TODO: add visibility mods
-    ( $name:ident ($($arg:ident: $atyp:ty,)*) -> $rtyp:ty { $($inner:tt)* }
+    ( $v:vis $name:ident ( $( $arg:ident: $atyp:ty, )* ) $( -> $rtyp:ty )? { $( $inner:tt )* }
     ) => {
-        mod $name {
+        #[allow(unused_imports)]
+        $v mod $name {
             use std::ptr;
             use std::mem;
 
@@ -53,8 +53,8 @@ macro_rules! sq_gen_func {
             use $crate::sq::*;
             use log::debug;
 
-            pub fn func($($arg: $atyp,)*) -> $rtyp {
-                $($inner)*
+            pub fn func($( $arg: $atyp, )*) $( -> $rtyp )? {
+                $( $inner )*
             }
     
             // FIXME: currently only 0 args
@@ -71,7 +71,7 @@ macro_rules! sq_gen_func {
                 //sq_getuserdata(hvm, -1, &mut method_ptr as _, ptr::null_mut());
                 //let method: fn($($atyp,)*) -> $rtyp = mem::transmute(method_ptr);
 
-                let ret: $rtyp = func();
+                let ret = func();
                 ret.push(hvm);
                 1
             }
