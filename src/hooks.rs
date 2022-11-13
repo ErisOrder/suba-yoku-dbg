@@ -5,7 +5,7 @@ use region::Protection;
 use anyhow::Result;
 use lazy_static::lazy_static;
 
-use crate::{sq, sq_gen_func, wrappers};
+use crate::{sq, sq_gen_func, wrappers, sq_bind_method};
 
 const CALL_SIZE: usize = 5;
 
@@ -30,8 +30,8 @@ lazy_static! {
 pub static TEXT_HOOK_ACTIVE: Mutex<bool> = Mutex::new(false);
 pub static PRINTF_HOOK_ACTIVE: Mutex<bool> = Mutex::new(true);
 
-fn fixup_addr(base_addr: usize, offset: usize) -> usize {
-    base_addr + offset + BASE_OFFSET
+pub fn fixup_addr(offset: usize) -> usize {
+    *BASE_ADDR + offset + BASE_OFFSET
 }
 
 unsafe fn place_call_hook(call_from: usize, call_to: usize, hook_size: usize) -> Result<()> {
@@ -60,11 +60,11 @@ unsafe fn place_call_hook(call_from: usize, call_to: usize, hook_size: usize) ->
     Ok(())
 }
 
-unsafe fn _hook(base_addr: usize, hook_off: usize, hook_size: usize, asm: dynasmrt::x86::Assembler, lab: AssemblyOffset) -> Result<()> {
+unsafe fn _hook(hook_off: usize, hook_size: usize, asm: dynasmrt::x86::Assembler, lab: AssemblyOffset) -> Result<()> {
     let func_buf = asm.finalize().unwrap();
     let func_ptr = func_buf.ptr(lab);
 
-    let from_offset = fixup_addr(base_addr, hook_off);
+    let from_offset = fixup_addr(hook_off);
     let to_offset = func_ptr as usize;
 
     unsafe { 
@@ -113,7 +113,7 @@ macro_rules! gen_hook {
                     ; ret
                 };
 
-                _hook(*BASE_ADDR, $hook_off, $hook_size, $hook_name, func)
+                _hook($hook_off, $hook_size, $hook_name, func)
             }
         }
     };
@@ -200,27 +200,34 @@ gen_hook! {
         static mut RET_ADDR: usize = 0;
         static mut SQ_TAB_PTR: usize = 0;
 
-        let fixed_bind_fn = fixup_addr(*BASE_ADDR, SQ_BIND_FN_OFFSET);
+        let fixed_bind_fn = fixup_addr(SQ_BIND_FN_OFFSET);
 
         unsafe extern "stdcall" fn bind(func_: *const u8) {
             debug!(target: "bind_hook", "called stub, sq ptr: 0x{:X}", SQ_TAB_PTR);
 
             let bind_fn: sq::BindSQFnFn = std::mem::transmute(func_); 
 
-            bind_fn(
-                SQ_TAB_PTR as _,
-                "TestF".as_ptr(),
-                test_func::func as _,
-                4,
-                test_func::sqfn as _,
-                true
-            );
+            sq_bind_method!(bind_fn, SQ_TAB_PTR, SingleArg);
+            sq_bind_method!(bind_fn, SQ_TAB_PTR, TestFunction);
+            sq_bind_method!(bind_fn, SQ_TAB_PTR, TestArgs);
         }
     }
 }
 
 sq_gen_func! {
-    test_func() -> SQInteger {
+    TestFunction() -> SQInteger {
         777
+    }
+}
+
+sq_gen_func! {
+    SingleArg(a: SQInteger) -> SQInteger {
+        a
+    }
+}
+
+sq_gen_func! {
+    TestArgs(a1: SQInteger, a2: SQInteger) -> SQInteger {
+        a1 + a2
     }
 }

@@ -1,5 +1,6 @@
 #![cfg(windows)]
 #![feature(abi_thiscall)]
+#![feature(macro_metavar_expr)]
 
 use winapi::shared::minwindef::{BOOL, DWORD, HINSTANCE, LPVOID, UINT, TRUE};
 use winapi::shared::d3d9::IDirect3D9;
