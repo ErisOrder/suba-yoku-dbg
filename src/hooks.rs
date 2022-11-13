@@ -3,6 +3,9 @@ use dynasmrt::{dynasm, DynasmApi, AssemblyOffset};
 use log::debug;
 use region::Protection;
 use anyhow::Result;
+use squirrel2_rs::SQInteger;
+
+use crate::{sq, sq_gen_func};
 
 const CALL_SIZE: usize = 5;
 
@@ -12,9 +15,14 @@ const SQ_HOOK_SIZE: usize = 6;
 const TEXT_HOOK_OFFSET: usize = 0xF3324;
 const TEXT_HOOK_SIZE: usize = 5;
 
+const REG_FN_HOOK_OFFSET: usize = 0x9657B;
+const REG_FN_HOOK_SIZE: usize = 5;
+
+const SQ_BIND_FN_OFFSET: usize = 0xB5F0;
+
 const BASE_OFFSET: usize = 0x1000 - 0x400; // DataOffset - HeaderSize
 
-pub static TEXT_HOOK_ACTIVE: Mutex<bool> = Mutex::new(true);
+pub static TEXT_HOOK_ACTIVE: Mutex<bool> = Mutex::new(false);
 pub static PRINTF_HOOK_ACTIVE: Mutex<bool> = Mutex::new(true);
 
 unsafe fn fixup_addr(base_addr: usize, offset: usize) -> usize {
@@ -145,7 +153,7 @@ macro_rules! gen_hook {
             ;; prologue!($hook_name, $stack_size) 
             $($asm)*
             ;; epilogue!($hook_name)
-            $($epilog:tt)*
+            $($epilog)*
             ; ret
         }, inner { $($inner)* } }
     };
@@ -160,7 +168,7 @@ macro_rules! gen_hook {
             ;; prologue!($hook_name, $stack_size) 
             $($asm)*
             ;; epilogue!($hook_name)
-            $($epilog:tt)*
+            $($epilog)*
             ; ret
         }, inner { $($inner)* } }
     };
@@ -182,7 +190,11 @@ gen_hook! {
             if matches!(PRINTF_HOOK_ACTIVE.lock(), Ok(b) if *b) {
                 let len = libc::strlen(s as *const std::ffi::c_char);
                 let sl = std::slice::from_raw_parts(s, len);
-                let s = String::from_utf8_lossy(sl);
+                
+                let s = if sl[sl.len() - 1] == b'\n' {
+                    String::from_utf8_lossy(&sl[..sl.len() - 1])
+                } else { String::from_utf8_lossy(sl) };
+  
                 debug!(target: "printf_hook", "{s}");
             } 
         }
@@ -221,3 +233,50 @@ gen_hook! {
         }
     }
 }
+
+gen_hook! {
+    // need to call 
+    hook_bind, REG_FN_HOOK_OFFSET, REG_FN_HOOK_SIZE, 0x200,
+    prolog {
+        ; pop DWORD [&mut RET_ADDR as *mut usize as i32]
+        ; mov DWORD [&mut SQ_TAB_PTR as *mut usize as i32], ecx
+        ; mov eax, DWORD fixup_addr(*crate::BASE_ADDR, SQ_BIND_FN_OFFSET) as _
+        ; call eax 
+    }
+    body {    
+        ; push DWORD fixup_addr(*crate::BASE_ADDR, SQ_BIND_FN_OFFSET) as _
+        ; mov edx, DWORD bind as _
+        ; call edx       
+    }
+    epilog {
+        ; push DWORD [&mut RET_ADDR as *mut usize as i32]
+    }
+    inner {
+        static mut RET_ADDR: usize = 0;
+        static mut SQ_TAB_PTR: usize = 0;
+
+        unsafe extern "stdcall" fn bind(func_: *const u8) {
+            debug!(target: "bind_hook", "called stub, sq ptr: 0x{:X}", SQ_TAB_PTR);
+
+            let bind_fn: sq::BindSQFnFn = std::mem::transmute(func_); 
+
+            bind_fn(
+                SQ_TAB_PTR as _,
+                "TestF".as_ptr(),
+                test_func::func as _,
+                4,
+                test_func::sqfn as _,
+                true
+            );
+        }
+    }
+}
+
+sq_gen_func! {
+    test_func() -> SQInteger {
+        777
+    }
+}
+
+
+

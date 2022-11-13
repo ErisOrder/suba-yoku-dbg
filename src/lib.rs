@@ -1,4 +1,5 @@
 #![cfg(windows)]
+#![feature(abi_thiscall)]
 
 use winapi::shared::minwindef::{BOOL, DWORD, HINSTANCE, LPVOID, UINT, TRUE};
 use winapi::shared::d3d9::IDirect3D9;
@@ -7,6 +8,7 @@ use lazy_static::lazy_static;
 mod wrappers;
 mod util;
 mod hooks;
+mod sq;
 
 type D3D9CreateFn = unsafe extern "stdcall" fn(UINT) -> *mut IDirect3D9;
 
@@ -73,6 +75,8 @@ fn dll_init() {
     std::env::set_var("RUST_LOG", "debug");
     pretty_env_logger::init();
 
+    wrappers::alloc_console();
+
     unsafe {
         hooks::hook_sq_printf(*BASE_ADDR)
             .expect("failed to install hook");
@@ -81,6 +85,10 @@ fn dll_init() {
         hooks::hook_text(*BASE_ADDR)
             .expect("failed to install hook");
         println!("text hook installed");
+
+        hooks::hook_bind(*BASE_ADDR)
+            .expect("failed to install hook");
+        println!("bind hook installed");
     }
 
     std::thread::spawn(|| {
@@ -104,6 +112,5 @@ fn dll_init() {
 
         listener.listen();
     });
-    
-    wrappers::alloc_console();
+
 }
