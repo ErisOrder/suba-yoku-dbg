@@ -210,6 +210,7 @@ gen_hook! {
             sq_bind_method!(bind_fn, SQ_TAB_PTR, SingleArg);
             sq_bind_method!(bind_fn, SQ_TAB_PTR, TestFunction);
             sq_bind_method!(bind_fn, SQ_TAB_PTR, TestArgs);
+            sq_bind_method!(bind_fn, SQ_TAB_PTR, TestString);
         }
     }
 }
@@ -229,5 +230,12 @@ sq_gen_func! {
 sq_gen_func! {
     TestArgs(a1: SQInteger, a2: SQInteger) -> SQInteger {
         a1 + a2
+    }
+}
+
+sq_gen_func! {
+    TestString(s: String) -> String {
+        s.push_str(" + addition");
+        s
     }
 }

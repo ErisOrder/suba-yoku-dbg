@@ -2,17 +2,9 @@ use anyhow::bail;
 use squirrel2_rs::*;
 use std::ptr::addr_of_mut;
 use anyhow::Result;
-use lazy_static::lazy_static;
-use crate::hooks;
 
-const SQ_THROWERROR_OFFSET: usize = 0x41340;
 
-lazy_static! {
-    pub static ref SQ_THROWERROR_FIXED: SQThrowErrorFn = {
-        let addr = hooks::fixup_addr(SQ_THROWERROR_OFFSET);
-        unsafe { std::mem::transmute(addr) }
-    };
-}
+pub type SQFn = unsafe extern "cdecl" fn(HSQUIRRELVM) -> SQInteger;
 
 /// Bind a function and it's associated Squirrel closure to the object
 /// 
@@ -29,10 +21,6 @@ lazy_static! {
 ///     sq_pop(vm,1); // pop table
 /// }
 /// ```
-pub type SQThrowErrorFn = unsafe extern "cdecl" fn(HSQUIRRELVM, *mut u8);
-
-pub type SQFn = unsafe extern "cdecl" fn(HSQUIRRELVM) -> SQInteger;
-
 pub type BindSQFnFn = unsafe extern "thiscall" fn(
     table: *mut u8,
     name: *const u8,
@@ -42,25 +30,88 @@ pub type BindSQFnFn = unsafe extern "thiscall" fn(
     static_var: bool    // for static member
 );
 
+
+/// Changed sq types:
+/// 
+/// ```cpp
+/// class SqObject {
+///     SQObjectType _type;
+///     + int junk;
+///     SQObjectValue _unVal;
+///     + int zeroes;
+/// }
+/// 
+/// class SQVM {
+///     ...
+///     SQInteger _stackbase;
+///     SQObjectPtr _roottable;
+///     SQObjectPtr _lasterror;
+///     SQObjectPtr _errorhandler;
+///     SQObjectPtr _debughook;
+///     
+///     SQObjectPtr temp_reg;
+///     + SQObjectPtr unknown_closure;
+///     
+///     CallInfo* _callsstack;
+///     SQInteger _callsstacksize;
+///     ...
+/// }
+/// 
+/// class SQSharedState {
+///     ...
+///     SQObjectPtrVec *_metamethods;
+///     + int junk;
+///     SQObjectPtr _metamethodsmap;
+///     SQObjectPtrVec *_systemstrings;
+///     SQObjectPtrVec *_types;
+///     StringTable *_stringtable;
+///     RefTable _refs_table;
+///     SQObjectPtr _registry;
+///     ...
+/// }
+/// ```
+/// 
 pub trait SqVar where Self: Sized {
     /// Push value to stack
-    unsafe fn push(self, vm: HSQUIRRELVM);
+    unsafe fn sq_push(self, vm: HSQUIRRELVM);
 
     /// Retrieve value from stack at index (top is -1, bottom is 0)
-    unsafe fn get(vm: HSQUIRRELVM, idx: SQInteger) -> Result<Self>;  
+    unsafe fn sq_get(vm: HSQUIRRELVM, idx: SQInteger) -> Result<Self>;  
 }
 
 impl SqVar for SQInteger {
-    unsafe fn push(self, vm: HSQUIRRELVM) {
+    unsafe fn sq_push(self, vm: HSQUIRRELVM) {
         sq_pushinteger(vm, self);
     }
 
-    unsafe fn get(vm: HSQUIRRELVM, idx: SQInteger) -> Result<Self> {
+    unsafe fn sq_get(vm: HSQUIRRELVM, idx: SQInteger) -> Result<Self> {
         let mut s: SQInteger = 0;
         let res = sq_getinteger(vm, idx, addr_of_mut!(s));
         if res != 0 { 
-            bail!("Failed to get element at idx {idx}") }
+            bail!("Failed to get integer at idx {idx}") }
         else { Ok(s) }
+    }
+}
+
+impl SqVar for String {
+    unsafe fn sq_push(mut self, vm: HSQUIRRELVM) {
+        self.push('\0');
+        sq_pushstring(vm, self.as_ptr() as _, -1);
+    }
+
+    unsafe fn sq_get(vm: HSQUIRRELVM, idx: SQInteger) -> Result<Self> {
+        let mut ptr = std::ptr::null_mut();
+        
+        let res = sq_getstring(vm, idx, addr_of_mut!(ptr) as _);
+        if res != 0 { 
+            bail!("Failed to get string at idx {idx}") }
+        else {
+            let len = libc::strlen(ptr);
+            let mut v = Vec::with_capacity(len);
+            std::ptr::copy(ptr, v.as_mut_ptr() as _, len);
+            v.set_len(len);
+            // TODO: Check if ptr to copied string or original
+            Ok(String::from_utf8_unchecked(v)) }
     }
 }
 
@@ -100,7 +151,8 @@ macro_rules! sq_gen_func {
             use $crate::sq::*;
             use log::debug;
 
-            pub fn func($( $arg: $atyp, )*) $( -> $rtyp )? {
+            #[allow(unused_mut)]
+            pub fn func($( mut $arg: $atyp, )*) $( -> $rtyp )? {
                 $( $inner )*
             }
 
@@ -116,7 +168,7 @@ macro_rules! sq_gen_func {
 
                 //let mut method_ptr = ptr::null_mut::<libc::c_void>();
                 //sq_getuserdata(hvm, -1, &mut method_ptr as _, ptr::null_mut());
-                //let method: fn($($atyp,)*) -> $rtyp = mem::transmute(method_ptr);
+                //let func: fn($($atyp,)*) $( -> $rtyp )? = mem::transmute(method_ptr);
 
                 // pop unused userdata with method
                 sq_pop(hvm, 1);
@@ -125,15 +177,14 @@ macro_rules! sq_gen_func {
 
                 $(  
                     // index from -1 to -argc
-                    let $arg = match <$atyp>::get(hvm, - (${ index() } + 1) ) {
+                    let $arg = match <$atyp>::sq_get(hvm, - (${ index() } + 1) ) {
                         Ok(a) => a,
                         Err(e) => {
                             let mut msg = e.to_string();
+                            msg.push_str(" | problem with argument ");
+                            msg.push_str(& ${ index() }.to_string());
                             msg.push('\0');
-                            // FIXME: Research why lib function don`t work
-                            SQ_THROWERROR_FIXED(hvm, msg.as_ptr() as _); 
-                            // Intended memory leak as sq_throwerror expects static str
-                            mem::forget(msg);
+                            sq_throwerror(hvm, msg.as_ptr() as _); 
                             return -1;
                         }
                     };
@@ -149,7 +200,7 @@ macro_rules! sq_gen_func {
 
                 // if return type exists, push it and return 1
                 $( ${ ignore(rtyp) }
-                    ret.push(hvm);
+                    ret.sq_push(hvm);
                     return 1;
                 )? 
 
