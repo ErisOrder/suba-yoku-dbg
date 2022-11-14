@@ -1,4 +1,4 @@
-use anyhow::bail;
+use anyhow::{bail, Context};
 use squirrel2_rs::*;
 use std::ptr::addr_of_mut;
 use anyhow::Result;
@@ -73,15 +73,113 @@ pub type BindSQFnFn = unsafe extern "thiscall" fn(
 /// 
 pub trait SqVar where Self: Sized {
     /// Push value to stack
-    unsafe fn sq_push(self, vm: HSQUIRRELVM);
+    unsafe fn sq_push(self, vm: HSQUIRRELVM) -> Result<()>;
 
     /// Retrieve value from stack at index (top is -1, bottom is 0)
     unsafe fn sq_get(vm: HSQUIRRELVM, idx: SQInteger) -> Result<Self>;  
 }
 
+pub trait SqError: ToString where Self: Sized {
+    /// Throw to SQVM as string
+    fn throw_to(self, vm: HSQUIRRELVM) {
+        let mut msg = self.to_string();
+        msg.push('\0');
+        unsafe { sq_throwerror(vm, msg.as_ptr() as _); }
+    }
+}
+
+impl SqError for anyhow::Error {
+    fn throw_to(self, vm: HSQUIRRELVM) {
+        let mut msg = self.root_cause().to_string();
+        msg.push('\0');
+        unsafe { sq_throwerror(vm, msg.as_ptr() as _); }
+    }
+}
+
+#[derive(Debug, PartialEq)]
+pub enum SqType {
+    Null = tagSQObjectType_OT_NULL as _,
+    Integer = tagSQObjectType_OT_INTEGER as _,
+    String = tagSQObjectType_OT_STRING as _,
+    Array = tagSQObjectType_OT_ARRAY as _,
+}
+
+
+impl TryInto<SqType> for SQObjectType {
+    type Error = anyhow::Error;
+
+    #[allow(non_upper_case_globals)]
+    fn try_into(self) -> Result<SqType> {
+        match self {
+            tagSQObjectType_OT_NULL => Ok(SqType::Null),
+            tagSQObjectType_OT_INTEGER => Ok(SqType::Integer),
+            tagSQObjectType_OT_STRING => Ok(SqType::String),
+            tagSQObjectType_OT_ARRAY => Ok(SqType::Array),
+            _ => bail!("Unknown or unsupported type: 0x{self:x}")
+        }
+    }
+}
+
+#[derive(Debug, PartialEq)]
+pub enum DynSqVar {
+    Null(SQNull),
+    Integer(SQInteger),
+    //Float(SQFloat),
+    //Bool(SQBool),
+    String(String),
+    //Table(HashMap<DynSqVar, DynSqVar>),
+    Array(Vec<DynSqVar>),
+    //UserData(Vec<u8>),
+    //UserPointer(SQInteger),
+    //Class(SQClass),
+    //Weakref(SQInteger)
+} 
+
+impl SqVar for DynSqVar {
+    unsafe fn sq_push(self, vm: HSQUIRRELVM) -> Result<()> {
+        match self {
+            DynSqVar::Null(n) => n.sq_push(vm),
+            DynSqVar::Integer(i) => i.sq_push(vm),
+            DynSqVar::String(s) => s.sq_push(vm),
+            DynSqVar::Array(a) => a.sq_push(vm),
+        }
+    }
+
+    unsafe fn sq_get(vm: HSQUIRRELVM, idx: SQInteger) -> Result<Self> {
+        match sq_gettype(vm, idx).try_into().context("Mismatched type")? {
+            SqType::Null => 
+                Ok(DynSqVar::Null(SQNull::sq_get(vm, idx)?)),
+            SqType::Integer => 
+                Ok(DynSqVar::Integer(SQInteger::sq_get(vm, idx)?)),
+            SqType::String => 
+                Ok(DynSqVar::String(String::sq_get(vm, idx)?)),
+            SqType::Array =>
+                Ok(DynSqVar::Array(Vec::sq_get(vm, idx)?)),
+        }
+    }
+}
+
+#[derive(Debug, PartialEq)]
+pub struct SQNull;
+impl SqVar for SQNull {
+    unsafe fn sq_push(self, vm: HSQUIRRELVM) -> Result<()> {
+        sq_pushnull(vm);
+        Ok(())
+    }
+
+    unsafe fn sq_get(vm: HSQUIRRELVM, idx: SQInteger) -> Result<Self> {
+        if SqType::Null != sq_gettype(vm, idx).try_into()? {
+            bail!("Mismatched type of object at index {idx}: not null")
+        } 
+        Ok(Self)
+    }
+}
+
+
 impl SqVar for SQInteger {
-    unsafe fn sq_push(self, vm: HSQUIRRELVM) {
+    unsafe fn sq_push(self, vm: HSQUIRRELVM) -> Result<()> {
         sq_pushinteger(vm, self);
+        Ok(())
     }
 
     unsafe fn sq_get(vm: HSQUIRRELVM, idx: SQInteger) -> Result<Self> {
@@ -93,10 +191,22 @@ impl SqVar for SQInteger {
     }
 }
 
+impl SqVar for &str {
+    unsafe fn sq_push(self, vm: HSQUIRRELVM) -> Result<()> {
+        sq_pushstring(vm, self.as_ptr() as _, self.len() as _);
+        Ok(())
+    }
+
+    unsafe fn sq_get(_vm: HSQUIRRELVM, _idx: SQInteger) -> Result<Self> {
+        unimplemented!("use String to get value from the vm")
+    }
+}
+
 impl SqVar for String {
-    unsafe fn sq_push(mut self, vm: HSQUIRRELVM) {
+    unsafe fn sq_push(mut self, vm: HSQUIRRELVM) -> Result<()> {
         self.push('\0');
         sq_pushstring(vm, self.as_ptr() as _, -1);
+        Ok(())
     }
 
     unsafe fn sq_get(vm: HSQUIRRELVM, idx: SQInteger) -> Result<Self> {
@@ -112,6 +222,48 @@ impl SqVar for String {
             v.set_len(len);
             // TODO: Check if ptr to copied string or original
             Ok(String::from_utf8_unchecked(v)) }
+    }
+}
+
+impl<T> SqVar for Vec<T> 
+where 
+    T: SqVar
+{
+    unsafe fn sq_push(self, vm: HSQUIRRELVM) -> Result<()> {
+        sq_newarray(vm, self.len() as i32);
+
+        for (index, elem) in self.into_iter().enumerate() {
+            if let Err(e) = elem.sq_push(vm) {
+                bail!("Failed to push element to stack: {e}")
+            }
+
+            // TODO: Retrieve proper error messages from SQVM
+            if sq_arrayappend(vm, -2) != 0 {
+                bail!("Failed to append element at index {index}")
+            }
+        }
+
+        Ok(())
+    }
+
+    unsafe fn sq_get(vm: HSQUIRRELVM, idx: SQInteger) -> Result<Self> {
+        // Push reference to array to the stack top
+        sq_weakref(vm, idx);
+        sq_pushnull(vm);
+
+        let mut out = Vec::new();
+        while sq_next(vm, -3) >= 0 {
+            let elem = T::sq_get(vm, -1)
+                .context("Failed to get array value")?;
+
+            out.push(elem);
+
+            sq_pop(vm, 2);
+        }
+
+        // Pop null iterator and weakref
+        sq_pop(vm, 2);
+        Ok(out)
     }
 }
 
@@ -135,10 +287,10 @@ macro_rules! sq_bind_method {
     };
 }
 
-
-/// Generates function with it`s SQ wrapper
+// TODO: Implement attribute proc-macro
+/// Generates module with function and it`s SQ wrapper
 #[macro_export]
-macro_rules! sq_gen_func {
+macro_rules! sq_gen_mod {
     ( $v:vis $name:ident ( $( $arg:ident: $atyp:ty ),* ) $( -> $rtyp:ty )? { $( $inner:tt )* }
     ) => {
         #[allow(unused_imports, non_snake_case)]
@@ -180,11 +332,8 @@ macro_rules! sq_gen_func {
                     let $arg = match <$atyp>::sq_get(hvm, - (${ index() } + 1) ) {
                         Ok(a) => a,
                         Err(e) => {
-                            let mut msg = e.to_string();
-                            msg.push_str(" | problem with argument ");
-                            msg.push_str(& ${ index() }.to_string());
-                            msg.push('\0');
-                            sq_throwerror(hvm, msg.as_ptr() as _); 
+                            let e = e.context(format!("problem with argument {}", ${ index() }));
+                            e.throw_to(hvm);
                             return -1;
                         }
                     };
@@ -192,7 +341,7 @@ macro_rules! sq_gen_func {
 
                 // Print arguments and their count
                 debug!(target: stringify!($name),
-                    concat!("argc: {}, args: ", $( stringify!($arg), " = {}; ", )* ),
+                    concat!("argc: {}, args: ", $( stringify!($arg), " = {:?}; ", )* ),
                     argc, $( $arg ),*
                 );
 
@@ -200,7 +349,11 @@ macro_rules! sq_gen_func {
 
                 // if return type exists, push it and return 1
                 $( ${ ignore(rtyp) }
-                    ret.sq_push(hvm);
+                    if let Err(e) = ret.sq_push(hvm) {
+                        let e = e.context("failed to push return value");
+                        e.throw_to(hvm);
+                        return -1;
+                    }
                     return 1;
                 )? 
 

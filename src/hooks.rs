@@ -5,7 +5,7 @@ use region::Protection;
 use anyhow::Result;
 use lazy_static::lazy_static;
 
-use crate::{sq, sq_gen_func, wrappers, sq_bind_method};
+use crate::{sq, sq_gen_mod, wrappers, sq_bind_method};
 
 const CALL_SIZE: usize = 5;
 
@@ -211,31 +211,50 @@ gen_hook! {
             sq_bind_method!(bind_fn, SQ_TAB_PTR, TestFunction);
             sq_bind_method!(bind_fn, SQ_TAB_PTR, TestArgs);
             sq_bind_method!(bind_fn, SQ_TAB_PTR, TestString);
+            sq_bind_method!(bind_fn, SQ_TAB_PTR, TestDyn);
         }
     }
 }
 
-sq_gen_func! {
+sq_gen_mod! {
     TestFunction() -> SQInteger {
         777
     }
 }
 
-sq_gen_func! {
+sq_gen_mod! {
     SingleArg(a: SQInteger) -> SQInteger {
         a
     }
 }
 
-sq_gen_func! {
+sq_gen_mod! {
     TestArgs(a1: SQInteger, a2: SQInteger) -> SQInteger {
         a1 + a2
     }
 }
 
-sq_gen_func! {
+sq_gen_mod! {
     TestString(s: String) -> String {
         s.push_str(" + addition");
         s
+    }
+}
+
+sq_gen_mod! {
+    TestDyn(d: DynSqVar) -> DynSqVar {
+        let s = match d {
+            DynSqVar::Null(_) => "Null".into(),
+            DynSqVar::Integer(i) => format!("Integer {i}"),
+            DynSqVar::String(s) => format!("String {s}"),
+            DynSqVar::Array(a) => format!("Array {a:?}"),
+        };
+        debug!("received {s}");
+
+        DynSqVar::Array(vec![
+            DynSqVar::Integer(9),
+            DynSqVar::Null(SQNull),
+            DynSqVar::String(String::from("Hello")),
+        ])
     }
 }
