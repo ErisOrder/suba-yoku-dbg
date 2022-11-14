@@ -244,7 +244,7 @@ sq_gen_mod! {
 sq_gen_mod! {
     TestDyn(d: DynSqVar) -> DynSqVar {
         let s = match d {
-            DynSqVar::Null(_) => "Null".into(),
+            DynSqVar::Null => "Null".into(),
             DynSqVar::Integer(i) => format!("Integer {i}"),
             DynSqVar::String(s) => format!("String {s}"),
             DynSqVar::Array(a) => format!("Array {a:?}"),
@@ -253,7 +253,7 @@ sq_gen_mod! {
 
         DynSqVar::Array(vec![
             DynSqVar::Integer(9),
-            DynSqVar::Null(SQNull),
+            DynSqVar::Null,
             DynSqVar::String(String::from("Hello")),
         ])
     }

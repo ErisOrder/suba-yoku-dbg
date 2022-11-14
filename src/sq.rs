@@ -1,7 +1,10 @@
 use anyhow::{bail, Context};
 use squirrel2_kaleido_rs::*;
 use std::ptr::addr_of_mut;
-use anyhow::Result;
+use anyhow::{
+    Result,
+    anyhow
+};
 
 
 pub type SQFn = unsafe extern "cdecl" fn(HSQUIRRELVM) -> SQInteger;
@@ -80,9 +83,21 @@ impl TryInto<SqType> for SQObjectType {
     }
 }
 
+macro_rules! sq_try {
+    ($vm:expr, $e:expr) => {
+        if { $e } != 0 {
+            unsafe { 
+                sq_getlasterror($vm);
+                Err(anyhow!(String::sq_get($vm, -1)
+                    .expect("failed to get last SQ error message")))
+            }
+        } else { Ok(()) }
+    };
+}
+
 #[derive(Debug, PartialEq)]
 pub enum DynSqVar {
-    Null(SQNull),
+    Null,
     Integer(SQInteger),
     //Float(SQFloat),
     //Bool(SQBool),
@@ -98,17 +113,19 @@ pub enum DynSqVar {
 impl SqVar for DynSqVar {
     unsafe fn sq_push(self, vm: HSQUIRRELVM) -> Result<()> {
         match self {
-            DynSqVar::Null(n) => n.sq_push(vm),
-            DynSqVar::Integer(i) => i.sq_push(vm),
-            DynSqVar::String(s) => s.sq_push(vm),
+            DynSqVar::Null                    => SQNull::sq_push(SQNull, vm),
+            DynSqVar::Integer(i)         => i.sq_push(vm),
+            DynSqVar::String(s)       => s.sq_push(vm),
             DynSqVar::Array(a) => a.sq_push(vm),
         }
     }
 
     unsafe fn sq_get(vm: HSQUIRRELVM, idx: SQInteger) -> Result<Self> {
         match sq_gettype(vm, idx).try_into().context("Mismatched type")? {
-            SqType::Null => 
-                Ok(DynSqVar::Null(SQNull::sq_get(vm, idx)?)),
+            SqType::Null => {
+                SQNull::sq_get(vm, idx)?;
+                Ok(DynSqVar::Null)
+            },
             SqType::Integer => 
                 Ok(DynSqVar::Integer(SQInteger::sq_get(vm, idx)?)),
             SqType::String => 
@@ -144,9 +161,9 @@ impl SqVar for SQInteger {
 
     unsafe fn sq_get(vm: HSQUIRRELVM, idx: SQInteger) -> Result<Self> {
         let mut s: SQInteger = 0;
-        let res = sq_getinteger(vm, idx, addr_of_mut!(s));
-        if res != 0 { 
-            bail!("Failed to get integer at idx {idx}") }
+        if let Err(e) = sq_try!{ vm, sq_getinteger(vm, idx, addr_of_mut!(s)) } {
+            bail!("Failed to get integer at idx {idx}: {e}")
+        }   
         else { Ok(s) }
     }
 }
@@ -172,18 +189,20 @@ impl SqVar for String {
     unsafe fn sq_get(vm: HSQUIRRELVM, idx: SQInteger) -> Result<Self> {
         let mut ptr = std::ptr::null_mut();
         
-        let res = sq_getstring(vm, idx, addr_of_mut!(ptr) as _);
-        if res != 0 { 
-            bail!("Failed to get string at idx {idx}") }
+        if let Err(e) = sq_try! { vm, sq_getstring(vm, idx, addr_of_mut!(ptr) as _) } {
+            bail!("Failed to get string at idx {idx}: {e}")
+        }
         else {
             let len = libc::strlen(ptr);
             let mut v = Vec::with_capacity(len);
             std::ptr::copy(ptr, v.as_mut_ptr() as _, len);
             v.set_len(len);
             // TODO: Check if ptr to copied string or original
-            Ok(String::from_utf8_unchecked(v)) }
-    }
+            Ok(String::from_utf8_unchecked(v)) 
+        }
+    }          
 }
+
 
 impl<T> SqVar for Vec<T> 
 where 
@@ -197,9 +216,8 @@ where
                 bail!("Failed to push element to stack: {e}")
             }
 
-            // TODO: Retrieve proper error messages from SQVM
-            if sq_arrayappend(vm, -2) != 0 {
-                bail!("Failed to append element at index {index}")
+            if let Err(e) = sq_try! { vm, sq_arrayappend(vm, -2) } {
+                bail!("Failed to append element at index {index}: {e}")
             }
         }
 
@@ -209,7 +227,7 @@ where
     unsafe fn sq_get(vm: HSQUIRRELVM, idx: SQInteger) -> Result<Self> {
         // Push reference to array to the stack top
         sq_weakref(vm, idx);
-        sq_pushnull(vm);
+        SQNull::sq_push(SQNull, vm)?;
 
         let mut out = Vec::new();
         while sq_next(vm, -3) >= 0 {
