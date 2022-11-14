@@ -1,5 +1,5 @@
 use anyhow::{bail, Context};
-use squirrel2_rs::*;
+use squirrel2_kaleido_rs::*;
 use std::ptr::addr_of_mut;
 use anyhow::Result;
 
@@ -31,46 +31,6 @@ pub type BindSQFnFn = unsafe extern "thiscall" fn(
 );
 
 
-/// Changed sq types:
-/// 
-/// ```cpp
-/// class SqObject {
-///     SQObjectType _type;
-///     + int junk;
-///     SQObjectValue _unVal;
-///     + int zeroes;
-/// }
-/// 
-/// class SQVM {
-///     ...
-///     SQInteger _stackbase;
-///     SQObjectPtr _roottable;
-///     SQObjectPtr _lasterror;
-///     SQObjectPtr _errorhandler;
-///     SQObjectPtr _debughook;
-///     
-///     SQObjectPtr temp_reg;
-///     + SQObjectPtr unknown_closure;
-///     
-///     CallInfo* _callsstack;
-///     SQInteger _callsstacksize;
-///     ...
-/// }
-/// 
-/// class SQSharedState {
-///     ...
-///     SQObjectPtrVec *_metamethods;
-///     + int junk;
-///     SQObjectPtr _metamethodsmap;
-///     SQObjectPtrVec *_systemstrings;
-///     SQObjectPtrVec *_types;
-///     StringTable *_stringtable;
-///     RefTable _refs_table;
-///     SQObjectPtr _registry;
-///     ...
-/// }
-/// ```
-/// 
 pub trait SqVar where Self: Sized {
     /// Push value to stack
     unsafe fn sq_push(self, vm: HSQUIRRELVM) -> Result<()>;
@@ -299,7 +259,7 @@ macro_rules! sq_gen_mod {
             use std::mem;
             use std::marker::PhantomData;
 
-            use squirrel2_rs::*;
+            use squirrel2_kaleido_rs::*;
             use $crate::sq::*;
             use log::debug;
 
