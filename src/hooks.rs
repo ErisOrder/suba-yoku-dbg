@@ -212,6 +212,7 @@ gen_hook! {
             sq_bind_method!(bind_fn, SQ_TAB_PTR, TestArgs);
             sq_bind_method!(bind_fn, SQ_TAB_PTR, TestString);
             sq_bind_method!(bind_fn, SQ_TAB_PTR, TestDyn);
+            sq_bind_method!(bind_fn, SQ_TAB_PTR, TestStaticArr);
         }
     }
 }
@@ -256,5 +257,11 @@ sq_gen_mod! {
             DynSqVar::Null,
             DynSqVar::String(String::from("Hello")),
         ])
+    }
+}
+
+sq_gen_mod! {
+    TestStaticArr(a: Vec<SQInteger>) -> SQInteger {
+        a.into_iter().sum()
     }
 }
