@@ -21,7 +21,8 @@ pub enum SqType {
     Integer,
     String,
     Array,
-    
+    Float,
+    Bool,
     /// Stub for unknown or unsupported types
     Unknown(SQInteger)
 }
@@ -38,6 +39,8 @@ impl From<SQObjectType> for SqType {
             tagSQObjectType_OT_INTEGER => SqType::Integer,
             tagSQObjectType_OT_STRING => SqType::String,
             tagSQObjectType_OT_ARRAY => SqType::Array,
+            tagSQObjectType_OT_FLOAT => SqType::Float,
+            tagSQObjectType_OT_BOOL => SqType::Bool,
             unk => SqType::Unknown(unk)
         }
     }
@@ -275,12 +278,12 @@ impl SQVm {
 
     /// Pushes a float into the stack
     #[inline]
-    pub unsafe fn push_float(&mut self, f: f32) {
+    pub unsafe fn push_float(&mut self, f: SQFloat) {
         sq_pushfloat(self.handle, f)
     }
 
     /// Gets the value of the float at the idx position in the stack.
-    pub unsafe fn get_float(&mut self, idx: SQInteger) -> Result<f32> {
+    pub unsafe fn get_float(&mut self, idx: SQInteger) -> Result<SQFloat> {
         let mut out = 0.0;
         sq_try! { self,
             sq_getfloat(self.handle, idx, addr_of_mut!(out)) 
@@ -421,12 +424,38 @@ where
     }
 }
 
+impl SqPush<SQFloat> for SQVm {
+    fn push(&mut self, val: SQFloat) -> Result<()> {
+        unsafe { self.push_float(val) }
+        Ok(())
+    }
+}
+
+impl SqGet<SQFloat> for SQVm {
+    fn get(&mut self, idx: SQInteger) -> Result<SQFloat> {
+        unsafe { self.get_float(idx) }
+    }
+}
+
+impl SqPush<bool> for SQVm {
+    fn push(&mut self, val: bool) -> Result<()> {
+        unsafe { self.push_bool(val) }
+        Ok(())
+    }
+}
+
+impl SqGet<bool> for SQVm {
+    fn get(&mut self, idx: SQInteger) -> Result<bool> {
+        unsafe { self.get_bool(idx) }
+    }
+}
+
 #[derive(Debug, PartialEq)]
 pub enum DynSqVar {
     Null,
     Integer(SQInteger),
-    //Float(f32),
-    //Bool(bool),
+    Float(SQFloat),
+    Bool(bool),
     String(String),
     //Table(HashMap<DynSqVar, DynSqVar>),
     Array(Vec<DynSqVar>),
@@ -443,6 +472,8 @@ impl SqPush<DynSqVar> for SQVm {
             DynSqVar::Integer(i) => self.push(i),
             DynSqVar::String(s) => self.push(s),
             DynSqVar::Array(v) => self.push(v),
+            DynSqVar::Float(f) => self.push(f),
+            DynSqVar::Bool(b) => self.push(b),
         }
     }
 }
@@ -454,6 +485,8 @@ impl SqGet<DynSqVar> for SQVm {
             SqType::Integer => Ok(DynSqVar::Integer(self.get(idx)?)),
             SqType::String => Ok(DynSqVar::String(self.get(idx)?)),
             SqType::Array => Ok(DynSqVar::Array(self.get(idx)?)),
+            SqType::Float => Ok(DynSqVar::Float(self.get(idx)?)),
+            SqType::Bool => Ok(DynSqVar::Bool(self.get(idx)?)),
             SqType::Unknown(t) => bail!("Unknown or unsupported type: 0x{t:X}"),
         }
     }

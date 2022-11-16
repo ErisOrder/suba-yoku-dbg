@@ -242,6 +242,8 @@ sq_gen_mod! {
             DynSqVar::Integer(i) => format!("Integer {i}"),
             DynSqVar::String(s) => format!("String {s}"),
             DynSqVar::Array(a) => format!("Array {a:?}"),
+            DynSqVar::Float(f) => format!("Float {f}"),
+            DynSqVar::Bool(b) => format!("Bool {b}"),
         };
         debug!("received {s}");
 
