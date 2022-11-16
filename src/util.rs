@@ -55,8 +55,9 @@ macro_rules! sq_bind_method {
 /// Generates module with function and it`s SQ wrapper
 #[macro_export]
 macro_rules! sq_gen_mod {
-    ( $v:vis $name:ident ( $( $arg:ident: $atyp:ty ),* $(;$varargs:ident: ...)? ) $( -> $rtyp:ty )? { $( $inner:tt )* }
+    ( $( $v:vis $name:ident ( $( $arg:ident: $atyp:ty ),* $(;$varargs:ident: ...)? ) $( -> $rtyp:ty )? { $( $inner:tt )* } )+ 
     ) => {
+        $(
         #[allow(unused_imports, non_snake_case)]
         $v mod $name {
             use squirrel2_kaleido_rs::*;
@@ -145,6 +146,7 @@ macro_rules! sq_gen_mod {
 
                 0
             }
-        }
+        } 
+        )+
     };
 }

@@ -222,28 +222,20 @@ sq_gen_mod! {
     TestFunction() -> SQInteger {
         777
     }
-}
 
-sq_gen_mod! {
     SingleArg(a: SQInteger) -> SQInteger {
         a
     }
-}
 
-sq_gen_mod! {
     TestArgs(a1: SQInteger, a2: SQInteger) -> SQInteger {
         a1 + a2
     }
-}
 
-sq_gen_mod! {
     TestString(s: String) -> String {
         s.push_str(" + addition");
         s
     }
-}
 
-sq_gen_mod! {
     TestDyn(d: DynSqVar) -> DynSqVar {
         let s = match d {
             DynSqVar::Null => "Null".into(),
@@ -259,14 +251,11 @@ sq_gen_mod! {
             DynSqVar::String(String::from("Hello")),
         ])
     }
-}
 
-sq_gen_mod! {
     TestStaticArr(a: Vec<SQInteger>) -> SQInteger {
         a.into_iter().sum()
     }
-}
-sq_gen_mod! {
+
     TestVarargs(_norm: DynSqVar; varargs: ...) -> SQInteger {
         varargs.len() as _
     }
