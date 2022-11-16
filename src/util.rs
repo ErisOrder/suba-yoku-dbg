@@ -55,7 +55,7 @@ macro_rules! sq_bind_method {
 /// Generates module with function and it`s SQ wrapper
 #[macro_export]
 macro_rules! sq_gen_mod {
-    ( $v:vis $name:ident ( $( $arg:ident: $atyp:ty ),* ) $( -> $rtyp:ty )? { $( $inner:tt )* }
+    ( $v:vis $name:ident ( $( $arg:ident: $atyp:ty ),* $(;$varargs:ident: ...)? ) $( -> $rtyp:ty )? { $( $inner:tt )* }
     ) => {
         #[allow(unused_imports, non_snake_case)]
         $v mod $name {
@@ -63,8 +63,11 @@ macro_rules! sq_gen_mod {
             use $crate::sq::*;
             use log::debug;
 
+            #[allow(unused)]
+            type VarArgs = Vec<DynSqVar>;
+
             #[allow(unused_mut)]
-            pub fn func($( mut $arg: $atyp, )*) $( -> $rtyp )? {
+            pub fn func($( mut $arg: $atyp, )* $( $varargs: VarArgs )? ) $( -> $rtyp )? {
                 $( $inner )*
             }
 
@@ -86,28 +89,50 @@ macro_rules! sq_gen_mod {
                 // pop unused userdata with method
                 vm.pop(1);
 
-                let argc = ${ count(arg) };
+                // Stack layout (class method with 2 args): 
+                // 1: this TODO: Check if all functions has class or table instance
+                // 2: arg0
+                // 3: arg1 <-- top
+                // ?: popped userdata with method ptr 
+                // technically, all functions has varargs by default
 
-                $(  
-                    // index from -1 to -argc
-                    let $arg: $atyp = match vm.get(- (${ index() } + 1) ) {
+                let top = vm.stack_len();
+                let norm_argc = ${ count(arg) };
+
+                $(  // normal (rust) args indexes: 2..2+norm_argc
+                    let idx = ${ index() } + 2;
+                    let $arg: $atyp = match vm.get(idx) {
                         Ok(a) => a,
                         Err(e) => {
                             vm.throw(e.context(
-                                format!("problem with argument {}", ${ index() })
+                                format!("problem with argument {idx}")
                             ));
                             return -1;
-                        }
-                    };
+                    }};
                 )*
+
+                $(  // vararg (rust) indexes: norm_argc+2..=top
+                    let mut $varargs: VarArgs = vec![];
+                    for i in norm_argc+2..=top {
+                        let val: DynSqVar = match vm.get(i) {
+                            Ok(a) => a,
+                            Err(e) => {
+                                vm.throw(e.context(
+                                    format!("problem with vararg {i}")
+                                ));
+                                return -1;
+                        }};
+                        $varargs.push(val);
+                    }
+                )?
 
                 // Print arguments and their count
                 debug!(target: stringify!($name),
-                    concat!("argc: {}, args: ", $( stringify!($arg), " = {:?}; ", )* ),
-                    argc, $( $arg ),*
+                    concat!("argc: {}, args: this; ", $( stringify!($arg), " = {:?}; ", )* $( stringify!($varargs), " = {:?}" )? ),
+                    top, $( $arg ),* $(, $varargs )?
                 );
 
-                let ret = func($( $arg ),*);
+                let ret = func($( $arg, )* $( $varargs )?);
 
                 // if return type exists, push it and return 1
                 $( ${ ignore(rtyp) }
