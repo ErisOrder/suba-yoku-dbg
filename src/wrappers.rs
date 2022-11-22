@@ -12,6 +12,7 @@ use winapi::{um::{
 }, shared::minwindef::{FALSE, HMODULE, DWORD}};
 use anyhow::Result;
 
+// TODO: Optimize this macro
 /// Call winapi function and return handle or error
 macro_rules! handle_or_err {
     // Indicate unsafety

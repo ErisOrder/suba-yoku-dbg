@@ -60,6 +60,7 @@ macro_rules! sq_gen_mod {
         $(
         #[allow(unused_imports, non_snake_case)]
         $v mod $name {
+            use std::collections::HashMap;
             use squirrel2_kaleido_rs::*;
             use $crate::sq::*;
             use log::debug;

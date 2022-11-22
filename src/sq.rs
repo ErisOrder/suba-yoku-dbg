@@ -1,6 +1,6 @@
 use anyhow::{bail, Context};
 use squirrel2_kaleido_rs::*;
-use std::{ptr::addr_of_mut, cmp::Ordering};
+use std::{ptr::addr_of_mut, cmp::Ordering, collections::HashMap, hash::Hash};
 use anyhow::{
     Result,
     anyhow
@@ -15,19 +15,21 @@ macro_rules! sq_try {
 }
 
 /// Rust-adapted SQObjectType enum
-#[derive(Debug, PartialEq)]
+#[derive(Copy, Clone, PartialEq, PartialOrd, Eq, Ord, Debug, Hash)]
 pub enum SqType {
     Null,
     Integer,
     String,
     Array,
+    Table,
     Float,
     Bool,
+
     /// Stub for unknown or unsupported types
     Unknown(SQInteger)
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Copy, Clone, PartialEq, PartialOrd, Eq, Ord, Debug, Hash)]
 pub struct SQNull;
 
 impl From<SQObjectType> for SqType {
@@ -41,6 +43,7 @@ impl From<SQObjectType> for SqType {
             tagSQObjectType_OT_ARRAY => SqType::Array,
             tagSQObjectType_OT_FLOAT => SqType::Float,
             tagSQObjectType_OT_BOOL => SqType::Bool,
+            tagSQObjectType_OT_TABLE => SqType::Table,
             unk => SqType::Unknown(unk)
         }
     }
@@ -200,6 +203,23 @@ impl SQVm {
         sq_try! { self, unsafe { sq_arrayappend(self.handle, idx) } }
             .context(format!("Failed to insert value to array at index {idx}"))
     } 
+
+    
+    /// Creates a new table and pushes it into the stack.
+    pub fn new_table(&mut self) {
+        unsafe { sq_newtable(self.handle) }
+    }
+
+    /// Pops a key and a value from the stack and performs a set operation
+    /// on the table or class that is at position `idx` in the stack,
+    /// if the slot does not exits it will be created.
+    /// 
+    /// if `is_static = true` creates a static member.
+    /// This parameter is only used if the target object is a class
+    pub fn new_slot(&mut self, idx: SQInteger, is_static: bool) -> Result<()> {
+        sq_try! { self, unsafe { sq_newslot(self.handle, idx, is_static as _) } }
+            .context(format!("Failed to create slot for table at idx {idx}"))
+    }
 
     /// Pushes in the stack the next key and value of an array, table or class slot. 
     /// 
@@ -424,6 +444,50 @@ where
     }
 }
 
+impl<K, V> SqPush<HashMap<K, V>> for SQVm
+where 
+    SQVm: SqPush<K> + SqPush<V>,
+{
+    fn push(&mut self, val: HashMap<K, V>) -> Result<()> {
+        self.new_table();
+
+        for (key, val) in val.into_iter() {
+            self.push(key).context("Failed to push key to the stack")?;
+            self.push(val).context("Failed to push value to the stack")?;
+
+            self.new_slot(-3, false)
+                .context("Failed to create new table slot")?;
+        }
+        Ok(())
+    }
+}
+
+impl<K, V> SqGet<HashMap<K, V>> for SQVm
+where 
+    SQVm: SqGet<K> + SqGet<V>,
+    K: PartialEq + Eq + Hash,
+{
+    fn get(&mut self, idx: SQInteger) -> Result<HashMap<K, V>> {
+        // Push a reference to a table to the stack top and a null iterator
+        self.ref_idx(idx);
+        self.push(SQNull)?;
+
+        let mut out = HashMap::new();
+
+        while self.sq_iter_next(-3).is_ok() {
+            let val: V = self.get(-1).context("Failed to get table value")?;
+            let key: K = self.get(-2).context("Failed to get table key")?;
+
+            out.insert(key, val);
+
+            self.pop(2);
+        }
+        // Pop the null iterator and the reference
+        self.pop(2);
+        Ok(out)
+    }
+}
+
 impl SqPush<SQFloat> for SQVm {
     fn push(&mut self, val: SQFloat) -> Result<()> {
         unsafe { self.push_float(val) }
@@ -450,14 +514,15 @@ impl SqGet<bool> for SQVm {
     }
 }
 
-#[derive(Debug, PartialEq)]
+// TODO: Implement custom Eq, Ord and Hash to allow using DynSqVar as table key 
+#[derive(Clone, PartialEq, Debug)]
 pub enum DynSqVar {
     Null,
     Integer(SQInteger),
     Float(SQFloat),
     Bool(bool),
     String(String),
-    //Table(HashMap<DynSqVar, DynSqVar>),
+    Table(HashMap<String, DynSqVar>),
     Array(Vec<DynSqVar>),
     //UserData(Vec<u8>),
     //UserPointer(???),
@@ -474,6 +539,7 @@ impl SqPush<DynSqVar> for SQVm {
             DynSqVar::Array(v) => self.push(v),
             DynSqVar::Float(f) => self.push(f),
             DynSqVar::Bool(b) => self.push(b),
+            DynSqVar::Table(t) => self.push(t),
         }
     }
 }
@@ -484,6 +550,7 @@ impl SqGet<DynSqVar> for SQVm {
             SqType::Null => Ok(DynSqVar::Null),
             SqType::Integer => Ok(DynSqVar::Integer(self.get(idx)?)),
             SqType::String => Ok(DynSqVar::String(self.get(idx)?)),
+            SqType::Table => Ok(DynSqVar::Table(self.get(idx)?)),
             SqType::Array => Ok(DynSqVar::Array(self.get(idx)?)),
             SqType::Float => Ok(DynSqVar::Float(self.get(idx)?)),
             SqType::Bool => Ok(DynSqVar::Bool(self.get(idx)?)),

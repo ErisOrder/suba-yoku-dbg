@@ -214,6 +214,7 @@ gen_hook! {
             sq_bind_method!(bind_fn, SQ_TAB_PTR, TestDyn);
             sq_bind_method!(bind_fn, SQ_TAB_PTR, TestStaticArr);
             sq_bind_method!(bind_fn, SQ_TAB_PTR, TestVarargs);
+            sq_bind_method!(bind_fn, SQ_TAB_PTR, TestTable);
         }
     }
 }
@@ -244,6 +245,7 @@ sq_gen_mod! {
             DynSqVar::Array(a) => format!("Array {a:?}"),
             DynSqVar::Float(f) => format!("Float {f}"),
             DynSqVar::Bool(b) => format!("Bool {b}"),
+            DynSqVar::Table(t) => format!("Table {t:?}"),
         };
         debug!("received {s}");
 
@@ -260,5 +262,15 @@ sq_gen_mod! {
 
     TestVarargs(_norm: DynSqVar; varargs: ...) -> SQInteger {
         varargs.len() as _
+    }
+
+    TestTable(input: HashMap<String, DynSqVar>) -> HashMap<String, DynSqVar> {
+        for (k, v) in input.into_iter() {
+            debug!("table {k}: {v:?}");
+        }
+        let mut out = HashMap::new();
+        out.insert("String".into(), DynSqVar::Bool(true));
+
+        out
     }
 }
