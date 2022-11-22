@@ -514,21 +514,66 @@ impl SqGet<bool> for SQVm {
     }
 }
 
-// TODO: Implement custom Eq, Ord and Hash to allow using DynSqVar as table key 
-#[derive(Clone, PartialEq, Debug)]
+#[derive(Clone, Debug)]
 pub enum DynSqVar {
     Null,
     Integer(SQInteger),
     Float(SQFloat),
     Bool(bool),
     String(String),
-    Table(HashMap<String, DynSqVar>),
+    Table(HashMap<DynSqVar, DynSqVar>),
     Array(Vec<DynSqVar>),
     //UserData(Vec<u8>),
     //UserPointer(???),
     //Class(SQClass),
     //Weakref(???)
 } 
+
+impl PartialEq for DynSqVar {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Integer(l0), Self::Integer(r0)) => l0 == r0,
+            (Self::Float(_), Self::Float(_)) => unimplemented!(),
+            (Self::Bool(l0), Self::Bool(r0)) => l0 == r0,
+            (Self::String(l0), Self::String(r0)) => l0 == r0,
+            (Self::Table(_), Self::Table(_)) => unimplemented!(),
+            (Self::Array(l0), Self::Array(r0)) => l0 == r0,
+            _ => core::mem::discriminant(self) == core::mem::discriminant(other),
+        }
+    }
+}
+
+impl Eq for DynSqVar {}
+
+impl PartialOrd for DynSqVar {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        match (self, other) {
+            (DynSqVar::Null, DynSqVar::Null) => Some(Ordering::Equal),
+            (DynSqVar::Integer(l), DynSqVar::Integer(r)) => l.partial_cmp(r),
+            (DynSqVar::Float(_), DynSqVar::Float(_)) => None,
+            (DynSqVar::Bool(l), DynSqVar::Bool(r)) => l.partial_cmp(r),
+            (DynSqVar::String(l), DynSqVar::String(r)) => l.partial_cmp(r),
+            (DynSqVar::Table(_), DynSqVar::Table(_)) => None,
+            (DynSqVar::Array(l), DynSqVar::Array(r)) => l.partial_cmp(r),
+            _ => None
+        }
+    }
+}
+
+impl Hash for DynSqVar {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        match self {
+            DynSqVar::Integer(i) => i.hash(state),
+            DynSqVar::Float(_) => unimplemented!(),
+            DynSqVar::Bool(b) => b.hash(state),
+            DynSqVar::String(s) => s.hash(state),
+            DynSqVar::Table(_) => unimplemented!(),
+            DynSqVar::Array(a) => a.hash(state),
+            DynSqVar::Null => core::mem::discriminant(self).hash(state),
+        }
+
+    }
+}
 
 impl SqPush<DynSqVar> for SQVm {
     fn push(&mut self, val: DynSqVar) -> Result<()> {

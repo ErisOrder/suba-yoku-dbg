@@ -264,12 +264,16 @@ sq_gen_mod! {
         varargs.len() as _
     }
 
-    TestTable(input: HashMap<String, DynSqVar>) -> HashMap<String, DynSqVar> {
+    TestTable(input: HashMap<DynSqVar, DynSqVar>) -> HashMap<DynSqVar, DynSqVar> {
         for (k, v) in input.into_iter() {
-            debug!("table {k}: {v:?}");
+            debug!("table {k:?}: {v:?}");
         }
+
         let mut out = HashMap::new();
-        out.insert("String".into(), DynSqVar::Bool(true));
+        out.insert(DynSqVar::Bool(false), DynSqVar::Bool(true));
+        out.insert(DynSqVar::String("key".into()), DynSqVar::String("val".into()));
+        out.insert(DynSqVar::Integer(2), DynSqVar::Integer(4));
+        out.insert(DynSqVar::Array(vec![]), DynSqVar::Array(vec![]));
 
         out
     }
