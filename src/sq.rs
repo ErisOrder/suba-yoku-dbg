@@ -49,31 +49,73 @@ impl From<SQObjectType> for SqType {
     }
 }
 
-/// Wrapper around SQVM handle. Does not close VM at drop
+/// Specifies VM behaviour on drop
+#[derive(Copy, Clone, PartialEq, PartialOrd, Eq, Ord, Debug, Hash)]
+pub enum VmSafety {
+    /// Closed on drop
+    Safe,
+    /// Closed manually
+    Unsafe,
+    /// Uncloseable
+    Friend
+}   
+
+/// Wrapper around SQVM handle. 
+/// Can be [Safe](VmSafety::Safe),
+/// [Unsafe](VmSafety::Unsafe),
+/// or [Friend](VmSafety::Friend).
+/// 
+/// The only distinction is that Safe VM is closed on drop and Friend VM cannot be closed by user
 pub struct SQVm {
-    handle: HSQUIRRELVM
+    handle: HSQUIRRELVM,
+    /// If [VmSafety::Safe], close VM on drop
+    safety: VmSafety,
 }
 
 pub enum ExecState {
  
 }
 
+impl Drop for SQVm {
+    fn drop(&mut self) {
+        if VmSafety::Safe == self.safety { self._close() }
+    }
+}
+
 /// VM
 #[allow(unused)]
 impl SQVm {
-    /// Create struct from raw pointer to vm instance
+    /// Create struct from raw pointer to vm instance, by default [Unsafe](VmSafety::Unsafe) vm
     pub unsafe fn from_handle(handle: HSQUIRRELVM) -> Self {
-        Self { handle }
+        Self { handle, safety: VmSafety::Unsafe }
     }
 
     /// Creates a new instance of a squirrel VM that consists in a new execution stack.
+    /// 
+    /// Returns [Safe](VmSafety::Safe) VM
     pub fn open(initial_stack_size: usize) -> Self {
-        Self { handle: unsafe { sq_open(initial_stack_size as _) } }
+        Self {
+            handle: unsafe { sq_open(initial_stack_size as _) },
+            safety: VmSafety::Safe,
+        }
+    }
+ 
+    /// Internal safe wrapper
+    /// 
+    /// Release a squirrel VM and all related friend VMs
+    fn _close(&mut self) {
+        unsafe { sq_close(self.handle) }
     }
 
-    /// Release a squirrel VM and all related friend VMs
-    pub fn close(self) {
-        unsafe { sq_close(self.handle) }
+    /// Release a squirrel VM and all related friend VMs 
+    /// 
+    /// Only for [Unsafe](VmSafety::Unsafe) VMs
+    pub fn close(mut self) {
+        match self.safety {
+            VmSafety::Safe => panic!("Safe VM cannot be closed manually"),
+            VmSafety::Unsafe => self._close(),
+            VmSafety::Friend => panic!("Friend VMs cannot be closed"),
+        }
     }
 
     /// Returns the execution state of a virtual machine
@@ -107,10 +149,11 @@ impl SQVm {
     }
 
     /// Creates a new friend vm of this one  
-    /// and pushes it in its stack as "thread" object
+    /// and pushes it in its stack as "thread" object.
+    /// Returns [Friend](VmSafety::Friend) VM
     pub fn new_thread(&mut self, initial_stack_size: usize) -> Self {
         let handle = unsafe { sq_newthread(self.handle, initial_stack_size as _) };
-        Self { handle }
+        Self { handle, safety: VmSafety::Friend }
     }
 }
 
