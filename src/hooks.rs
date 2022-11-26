@@ -29,6 +29,7 @@ lazy_static! {
 
 pub static TEXT_HOOK_ACTIVE: Mutex<bool> = Mutex::new(false);
 pub static PRINTF_HOOK_ACTIVE: Mutex<bool> = Mutex::new(true);
+pub static BREAKPOINT_ACTIVE: Mutex<bool> = Mutex::new(true);
 
 pub fn fixup_addr(offset: usize) -> usize {
     *BASE_ADDR + offset + BASE_OFFSET
@@ -215,6 +216,9 @@ gen_hook! {
             sq_bind_method!(bind_fn, SQ_TAB_PTR, TestStaticArr);
             sq_bind_method!(bind_fn, SQ_TAB_PTR, TestVarargs);
             sq_bind_method!(bind_fn, SQ_TAB_PTR, TestTable);
+            sq_bind_method!(bind_fn, SQ_TAB_PTR, TestUserData);
+            sq_bind_method!(bind_fn, SQ_TAB_PTR, TestCreateUserData);
+            sq_bind_method!(bind_fn, SQ_TAB_PTR, SpinLockBreakpoint);
         }
     }
 }
@@ -246,6 +250,7 @@ sq_gen_mod! {
             DynSqVar::Float(f) => format!("Float {f}"),
             DynSqVar::Bool(b) => format!("Bool {b}"),
             DynSqVar::Table(t) => format!("Table {t:?}"),
+            DynSqVar::UserData(u) => format!("UserData {u:?}"),
         };
         debug!("received {s}");
 
@@ -276,5 +281,26 @@ sq_gen_mod! {
         out.insert(DynSqVar::Array(vec![]), DynSqVar::Array(vec![]));
 
         out
+    }
+
+    TestCreateUserData() -> SqUserData {
+        "magic_string".to_string().into_bytes()
+    }
+
+    TestUserData(inp: SqUserData) -> SqUserData {
+        debug!("Received userdata: {inp:?}");
+        inp
+    }
+
+    // Halts execution to the point of breakpoint disarming
+    SpinLockBreakpoint() {
+        debug!("Breakpoint");
+        loop {
+            let mut bp = crate::hooks::BREAKPOINT_ACTIVE.lock().unwrap();
+            if !*bp {
+                *bp = true;
+                break;
+            }
+        }
     }
 }

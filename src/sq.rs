@@ -8,11 +8,16 @@ use anyhow::{
 
 macro_rules! sq_try {
     ($vm:expr, $e:expr) => {
-        if { $e } != 0 {
-            Err(anyhow!($vm.last_error()))
-        } else { Ok(()) }
+        {
+            let out = $e;
+            if out == -1 {
+                Err(anyhow!($vm.last_error()))
+            } else { Ok(out) }
+        }
     };
 }
+
+pub type SqUserData = Vec<u8>; 
 
 /// Rust-adapted SQObjectType enum
 #[derive(Copy, Clone, PartialEq, PartialOrd, Eq, Ord, Debug, Hash)]
@@ -24,6 +29,7 @@ pub enum SqType {
     Table,
     Float,
     Bool,
+    UserData,
 
     /// Stub for unknown or unsupported types
     Unknown(SQInteger)
@@ -44,6 +50,7 @@ impl From<SQObjectType> for SqType {
             tagSQObjectType_OT_FLOAT => SqType::Float,
             tagSQObjectType_OT_BOOL => SqType::Bool,
             tagSQObjectType_OT_TABLE => SqType::Table,
+            tagSQObjectType_OT_USERDATA => SqType::UserData,
             unk => SqType::Unknown(unk)
         }
     }
@@ -90,6 +97,11 @@ impl SQVm {
         Self { handle, safety: VmSafety::Unsafe }
     }
 
+    /// Get internal vm handle
+    pub fn get_handle(self) -> HSQUIRRELVM {
+        self.handle
+    }
+
     /// Creates a new instance of a squirrel VM that consists in a new execution stack.
     /// 
     /// Returns [Safe](VmSafety::Safe) VM
@@ -125,7 +137,8 @@ impl SQVm {
 
     /// Suspends the execution of the vm
     pub fn suspend(&mut self) -> Result<()> {
-        sq_try! { self, unsafe { sq_suspendvm(self.handle) } }
+        sq_try! { self, unsafe { sq_suspendvm(self.handle) } }?;
+        Ok(())
     }
 
     /// Wake up the execution a previously suspended virtual machine
@@ -145,7 +158,8 @@ impl SQVm {
     pub fn wake_up(&mut self, resumed_ret: bool, retval: bool, raise_err: bool, throw_err: bool) -> Result<()> {
         sq_try! { self, unsafe {
             sq_wakeupvm(self.handle, resumed_ret as _, retval as _, raise_err as _, throw_err as _)
-        } }
+        } };
+        Ok(())
     }
 
     /// Creates a new friend vm of this one  
@@ -244,7 +258,8 @@ impl SQVm {
     /// of the array at the position `idx` in the stack.
     pub fn array_append(&mut self, idx: SQInteger) -> Result<()> {
         sq_try! { self, unsafe { sq_arrayappend(self.handle, idx) } }
-            .context(format!("Failed to insert value to array at index {idx}"))
+            .context(format!("Failed to insert value to array at index {idx}"))?;
+        Ok(())
     } 
 
     
@@ -261,7 +276,8 @@ impl SQVm {
     /// This parameter is only used if the target object is a class
     pub fn new_slot(&mut self, idx: SQInteger, is_static: bool) -> Result<()> {
         sq_try! { self, unsafe { sq_newslot(self.handle, idx, is_static as _) } }
-            .context(format!("Failed to create slot for table at idx {idx}"))
+            .context(format!("Failed to create slot for table at idx {idx}"))?;
+        Ok(())
     }
 
     /// Pushes in the stack the next key and value of an array, table or class slot. 
@@ -353,6 +369,47 @@ impl SQVm {
         }.context(format!("Failed to get float at idx {idx}"))?; 
         Ok(out)
     }
+
+    /// Pushes a userpointer into the stack
+    pub unsafe fn push_userpointer(&mut self, ptr: SQUserPointer) {
+        sq_pushuserpointer(self.handle, ptr)
+    }
+
+    /// Creates a new userdata and pushes it in the stack
+    pub unsafe fn new_userdata(&mut self, size: SQUnsignedInteger) -> SQUserPointer {
+        sq_newuserdata(self.handle, size)
+    }
+
+    /// Gets a pointer to the value of the userdata at the `idx` position in the stack.
+    /// 
+    /// Returns (`ptr`, `type_tag`)
+    /// * `ptr` - userpointer that will point to the userdata's payload
+    /// * `type_tag` -  `SQUserPointer` that will store the userdata tag(see sq_settypetag).
+    pub unsafe fn get_userdata(&mut self, idx: SQInteger) -> Result<(SQUserPointer, SQUserPointer)> {
+        let mut ptr = std::ptr::null_mut();
+        let mut typetag = std::ptr::null_mut();
+        sq_try! { self,
+            sq_getuserdata(self.handle, idx, addr_of_mut!(ptr), addr_of_mut!(typetag))
+        }.context(format!("Failed to get userdata at idx {idx}"))?;
+        Ok((ptr, typetag))
+    }
+
+    /// Get the value of the userpointer at the `idx` position in the stack.
+    pub unsafe fn get_userpointer(&mut self, idx: SQInteger) -> Result<SQUserPointer> {
+        let mut ptr = std::ptr::null_mut();
+        sq_try! { self,
+            sq_getuserpointer(self.handle, idx, addr_of_mut!(ptr))
+        }.context(format!("Failed to get userpointer at idx {idx}"))?;
+        Ok(ptr)
+    }
+
+    /// Returns the size of a value at the idx position in the stack
+    /// Works only for arrays, tables, userdata, and strings
+    pub unsafe fn get_size(&mut self, idx: SQInteger) -> Result<SQInteger> {
+        sq_try! { self,
+            sq_getsize(self.handle, idx)
+        }.context(format!("Failed to get size of value at idx {idx}"))
+    }
 }
 
 
@@ -413,6 +470,7 @@ impl SqPush<&str> for SQVm {
     }
 }
 
+// TODO: Use get_size() to make this more safe
 impl SqGet<String> for SQVm {
     fn get(&mut self, idx: SQInteger) -> Result<String> {
         let ptr = unsafe { self.get_string(idx) }?;
@@ -557,6 +615,35 @@ impl SqGet<bool> for SQVm {
     }
 }
 
+impl SqPush<SqUserData> for SQVm {
+    fn push(&mut self, val: SqUserData) -> Result<()> {
+        unsafe { 
+            let ptr = self.new_userdata(val.len() as _);
+            std::ptr::copy(val.as_ptr() as _, ptr, val.len());
+        }
+        Ok(())
+    }
+}
+
+impl SqGet<SqUserData> for SQVm {
+    fn get(&mut self, idx: SQInteger) -> Result<SqUserData> {
+        match unsafe { self.get_userdata(idx) } {
+            Ok((user_data, _)) => {
+                let out = unsafe {
+                    let size = self.get_size(idx)? as usize;
+                    let mut out = SqUserData::with_capacity(size);
+                    std::ptr::copy(user_data, out.as_ptr() as _, size);
+                    out.set_len(size);
+                    out
+                };
+                Ok(out)
+            }
+            Err(e) => Err(e) 
+        }
+    }
+}
+
+
 #[derive(Clone, Debug)]
 pub enum DynSqVar {
     Null,
@@ -566,7 +653,7 @@ pub enum DynSqVar {
     String(String),
     Table(HashMap<DynSqVar, DynSqVar>),
     Array(Vec<DynSqVar>),
-    //UserData(Vec<u8>),
+    UserData(SqUserData),
     //UserPointer(???),
     //Class(SQClass),
     //Weakref(???)
@@ -612,6 +699,7 @@ impl Hash for DynSqVar {
             DynSqVar::String(s) => s.hash(state),
             DynSqVar::Table(_) => unimplemented!(),
             DynSqVar::Array(a) => a.hash(state),
+            DynSqVar::UserData(u) => u.hash(state),
             DynSqVar::Null => core::mem::discriminant(self).hash(state),
         }
 
@@ -628,6 +716,7 @@ impl SqPush<DynSqVar> for SQVm {
             DynSqVar::Float(f) => self.push(f),
             DynSqVar::Bool(b) => self.push(b),
             DynSqVar::Table(t) => self.push(t),
+            DynSqVar::UserData(u) => self.push(u),
         }
     }
 }
@@ -642,6 +731,7 @@ impl SqGet<DynSqVar> for SQVm {
             SqType::Array => Ok(DynSqVar::Array(self.get(idx)?)),
             SqType::Float => Ok(DynSqVar::Float(self.get(idx)?)),
             SqType::Bool => Ok(DynSqVar::Bool(self.get(idx)?)),
+            SqType::UserData => Ok(DynSqVar::UserData(self.get(idx)?)),
             SqType::Unknown(t) => bail!("Unknown or unsupported type: 0x{t:X}"),
         }
     }

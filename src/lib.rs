@@ -110,6 +110,14 @@ fn dll_init() {
             }
         });
 
+        listener.register_cb('B' as u16, || {
+            if let Ok(mut b) = hooks::BREAKPOINT_ACTIVE.lock() {
+                *b = !*b;
+                if *b { println!("breakpoint armed"); } 
+                else { println!("breakpoint disarmed"); }
+            }
+        });
+
         listener.listen();
     });
 
