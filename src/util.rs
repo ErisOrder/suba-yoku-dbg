@@ -55,7 +55,8 @@ macro_rules! sq_bind_method {
 /// Generates module with function and it`s SQ wrapper
 #[macro_export]
 macro_rules! sq_gen_mod {
-    ( $( $v:vis $name:ident ( $( $arg:ident: $atyp:ty ),* $(;$varargs:ident: ...)? ) $( -> $rtyp:ty )? { $( $inner:tt )* } )+ 
+    ( $( $v:vis $name:ident ($(@self: $vm_self:ident)? $( $arg:ident: $atyp:ty ),* $(;$varargs:ident: ...)? )
+      $( -> $rtyp:ty )? { $( $inner:tt )* } )+ 
     ) => {
         $(
         #[allow(unused_imports, non_snake_case)]
@@ -69,13 +70,12 @@ macro_rules! sq_gen_mod {
             type VarArgs = Vec<DynSqVar>;
 
             #[allow(unused_mut)]
-            pub fn func($( mut $arg: $atyp, )* $( $varargs: VarArgs )? ) $( -> $rtyp )? {
+            pub fn func( $($vm_self: &mut SQVm,)? $( mut $arg: $atyp, )* $( $varargs: VarArgs )? ) $( -> $rtyp )? {
                 $( $inner )*
             }
 
             #[allow(unreachable_code, unused_variables)]
-            pub unsafe extern "cdecl" fn sqfn(hvm: HSQUIRRELVM) -> SQInteger 
-            {
+            pub unsafe extern "cdecl" fn sqfn(hvm: HSQUIRRELVM) -> SQInteger {   
                 let mut vm = SQVm::from_handle(hvm);
                 // for some reason SQObject struct is 16  bytes in size, not 8
                 // 0 is still type and 8 is SQObject, while 4 is 0xBAADFOOD and 12 is zeroed
@@ -87,7 +87,6 @@ macro_rules! sq_gen_mod {
                 //let mut method_ptr = ptr::null_mut::<libc::c_void>();
                 //sq_getuserdata(hvm, -1, &mut method_ptr as _, ptr::null_mut());
                 //let func: fn($($atyp,)*) $( -> $rtyp )? = mem::transmute(method_ptr);
-
                 // pop unused userdata with method
                 vm.pop(1);
 
@@ -134,7 +133,7 @@ macro_rules! sq_gen_mod {
                     top, $( $arg ),* $(, $varargs )?
                 );
 
-                let ret = func($( $arg, )* $( $varargs )?);
+                let ret = func( $( ${ ignore(vm_self) } &mut vm, )? $( $arg, )* $( $varargs )?);
 
                 // if return type exists, push it and return 1
                 $( ${ ignore(rtyp) }
