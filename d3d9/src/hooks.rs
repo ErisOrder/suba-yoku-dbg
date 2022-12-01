@@ -5,7 +5,8 @@ use region::Protection;
 use anyhow::Result;
 use lazy_static::lazy_static;
 
-use crate::{sq, sq_gen_mod, wrappers, sq_bind_method};
+use crate::{sq_gen_mod, wrappers, sq_bind_method};
+
 
 const CALL_SIZE: usize = 5;
 
@@ -206,7 +207,7 @@ gen_hook! {
         unsafe extern "stdcall" fn bind(func_: *const u8) {
             debug!(target: "bind_hook", "called stub, sq ptr: 0x{:X}", SQ_TAB_PTR);
 
-            let bind_fn: sq::BindSQFnFn = std::mem::transmute(func_); 
+            let bind_fn: crate::util::BindSQFnFn = std::mem::transmute(func_); 
 
             sq_bind_method!(bind_fn, SQ_TAB_PTR, SingleArg);
             sq_bind_method!(bind_fn, SQ_TAB_PTR, TestFunction);

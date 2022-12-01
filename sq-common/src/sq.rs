@@ -741,28 +741,4 @@ impl SqGet<DynSqVar> for SQVm {
 /// C SQFunction type 
 pub type SQFn = unsafe extern "cdecl" fn(HSQUIRRELVM) -> SQInteger;
 
-/// Bind a function and it's associated Squirrel closure to the object
-/// 
-/// ```cpp
-/// inline void BindFunc([this], const SQChar* name, void* method, size_t methodSize, SQFUNCTION func, bool staticVar = false) {
-///     sq_pushobject(vm, GetObject());
-///     sq_pushstring(vm, name, -1);
-///
-///     SQUserPointer methodPtr = sq_newuserdata(vm, static_cast<SQUnsignedInteger>(methodSize));
-///     memcpy(methodPtr, method, methodSize);
-///
-///     sq_newclosure(vm, func, 1);
-///     sq_newslot(vm, -3, staticVar);
-///     sq_pop(vm,1); // pop table
-/// }
-/// ```
-pub type BindSQFnFn = unsafe extern "thiscall" fn(
-    table: *mut u8,
-    name: *const u8,
-    method: *mut u8,
-    method_size: usize, // usually 4
-    sq_fn: SQFn,        // sq wrapper func
-    static_var: bool    // for static member
-);
-
 

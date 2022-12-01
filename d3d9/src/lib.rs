@@ -9,7 +9,6 @@ use lazy_static::lazy_static;
 mod wrappers;
 mod util;
 mod hooks;
-mod sq;
 
 type D3D9CreateFn = unsafe extern "stdcall" fn(UINT) -> *mut IDirect3D9;
 

@@ -31,6 +31,31 @@ impl KeyListener {
 }
 
 
+/// Bind a function and it's associated Squirrel closure to the object
+/// 
+/// ```cpp
+/// // Source
+/// inline void BindFunc([this], const SQChar* name, void* method, size_t methodSize, SQFUNCTION func, bool staticVar = false) {
+///     sq_pushobject(vm, GetObject());
+///     sq_pushstring(vm, name, -1);
+///
+///     SQUserPointer methodPtr = sq_newuserdata(vm, static_cast<SQUnsignedInteger>(methodSize));
+///     memcpy(methodPtr, method, methodSize);
+///
+///     sq_newclosure(vm, func, 1);
+///     sq_newslot(vm, -3, staticVar);
+///     sq_pop(vm,1); // pop table
+/// }
+/// ```
+pub type BindSQFnFn = unsafe extern "thiscall" fn(
+    table: *mut u8,
+    name: *const u8,
+    method: *mut u8,
+    method_size: usize, // usually 4
+    sq_fn: sq_common::SQFn,        // sq wrapper func
+    static_var: bool    // for static member
+);
+
 /// Binds generated SQ module to table
 ///
 /// Sqrat function wrapping chain:
@@ -63,7 +88,7 @@ macro_rules! sq_gen_mod {
         $v mod $name {
             use std::collections::HashMap;
             use squirrel2_kaleido_rs::*;
-            use $crate::sq::*;
+            use sq_common::*;
             use log::debug;
 
             #[allow(unused)]
