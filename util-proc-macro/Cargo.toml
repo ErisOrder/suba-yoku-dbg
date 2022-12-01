@@ -10,7 +10,7 @@ proc-macro = true
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-syn = "1"
-quote = "1"
-proc-macro2 = "1"
+syn = { version = "1.0.105", features = ["full"] }
+quote = "1.0.21"
+proc-macro2 = "1.0.47"
 darling = "0.14"

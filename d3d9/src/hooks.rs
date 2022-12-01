@@ -1,4 +1,5 @@
 use std::sync::Mutex;
+use std::collections::HashMap;
 use dynasmrt::{dynasm, DynasmApi, AssemblyOffset};
 use log::debug;
 use region::Protection;
@@ -6,8 +7,9 @@ use anyhow::Result;
 use lazy_static::lazy_static;
 use util_proc_macro::sqfn;
 
-use crate::{sq_gen_mod, wrappers, sq_bind_method};
-
+use crate::{wrappers, sq_bind_method};
+use sq_common::*;
+use squirrel2_kaleido_rs::SQInteger;
 
 const CALL_SIZE: usize = 5;
 
@@ -225,84 +227,90 @@ gen_hook! {
     }
 }
 
-sq_gen_mod! {
-    TestFunction() -> SQInteger {
-        777
+#[sqfn]
+fn TestFunction() -> SQInteger {
+    777
+}
+
+#[sqfn]
+fn SingleArg(a: SQInteger) -> SQInteger {
+    a
+}
+
+#[sqfn]
+fn TestArgs(a1: SQInteger, a2: SQInteger) -> SQInteger {
+    a1 + a2
+}
+
+#[sqfn]
+fn TestString(mut s: String) -> String {
+    s.push_str(" + addition");
+    s
+}
+
+#[sqfn]
+fn TestDyn(d: DynSqVar) -> DynSqVar {
+    let s = match d {
+        DynSqVar::Null => "Null".into(),
+        DynSqVar::Integer(i) => format!("Integer {i}"),
+        DynSqVar::String(s) => format!("String {s}"),
+        DynSqVar::Array(a) => format!("Array {a:?}"),
+        DynSqVar::Float(f) => format!("Float {f}"),
+        DynSqVar::Bool(b) => format!("Bool {b}"),
+        DynSqVar::Table(t) => format!("Table {t:?}"),
+        DynSqVar::UserData(u) => format!("UserData {u:?}"),
+    };
+    debug!("received {s}");
+    DynSqVar::Array(vec![
+        DynSqVar::Integer(9),
+        DynSqVar::Null,
+        DynSqVar::String(String::from("Hello")),
+    ])
+}
+
+#[sqfn]
+fn TestStaticArr(a: Vec<SQInteger>) -> SQInteger {
+    a.into_iter().sum()
+}
+
+#[sqfn(varargs = "varargs")]
+fn TestVarargs(_norm: DynSqVar) -> SQInteger {
+    varargs.len() as _
+}
+
+#[sqfn]
+fn TestTable(input: HashMap<DynSqVar, DynSqVar>) -> HashMap<DynSqVar, DynSqVar> {
+    for (k, v) in input.into_iter() {
+        debug!("table {k:?}: {v:?}");
     }
+    let mut out = HashMap::new();
+    out.insert(DynSqVar::Bool(false), DynSqVar::Bool(true));
+    out.insert(DynSqVar::String("key".into()), DynSqVar::String("val".into()));
+    out.insert(DynSqVar::Integer(2), DynSqVar::Integer(4));
+    out.insert(DynSqVar::Array(vec![]), DynSqVar::Array(vec![]));
+    out
+}
 
-    SingleArg(a: SQInteger) -> SQInteger {
-        a
-    }
+#[sqfn]
+fn TestCreateUserData() -> SqUserData {
+    "magic_string".to_string().into_bytes()
+}
 
-    TestArgs(a1: SQInteger, a2: SQInteger) -> SQInteger {
-        a1 + a2
-    }
+#[sqfn]
+fn TestUserData(inp: SqUserData) -> SqUserData {
+    debug!("Received userdata: {inp:?}");
+    inp
+}
 
-    TestString(s: String) -> String {
-        s.push_str(" + addition");
-        s
-    }
-
-    TestDyn(d: DynSqVar) -> DynSqVar {
-        let s = match d {
-            DynSqVar::Null => "Null".into(),
-            DynSqVar::Integer(i) => format!("Integer {i}"),
-            DynSqVar::String(s) => format!("String {s}"),
-            DynSqVar::Array(a) => format!("Array {a:?}"),
-            DynSqVar::Float(f) => format!("Float {f}"),
-            DynSqVar::Bool(b) => format!("Bool {b}"),
-            DynSqVar::Table(t) => format!("Table {t:?}"),
-            DynSqVar::UserData(u) => format!("UserData {u:?}"),
-        };
-        debug!("received {s}");
-
-        DynSqVar::Array(vec![
-            DynSqVar::Integer(9),
-            DynSqVar::Null,
-            DynSqVar::String(String::from("Hello")),
-        ])
-    }
-
-    TestStaticArr(a: Vec<SQInteger>) -> SQInteger {
-        a.into_iter().sum()
-    }
-
-    TestVarargs(_norm: DynSqVar; varargs: ...) -> SQInteger {
-        varargs.len() as _
-    }
-
-    TestTable(input: HashMap<DynSqVar, DynSqVar>) -> HashMap<DynSqVar, DynSqVar> {
-        for (k, v) in input.into_iter() {
-            debug!("table {k:?}: {v:?}");
-        }
-
-        let mut out = HashMap::new();
-        out.insert(DynSqVar::Bool(false), DynSqVar::Bool(true));
-        out.insert(DynSqVar::String("key".into()), DynSqVar::String("val".into()));
-        out.insert(DynSqVar::Integer(2), DynSqVar::Integer(4));
-        out.insert(DynSqVar::Array(vec![]), DynSqVar::Array(vec![]));
-
-        out
-    }
-
-    TestCreateUserData() -> SqUserData {
-        "magic_string".to_string().into_bytes()
-    }
-
-    TestUserData(inp: SqUserData) -> SqUserData {
-        debug!("Received userdata: {inp:?}");
-        inp
-    }
-
-    // Halts execution to the point of breakpoint disarming
-    SpinLockBreakpoint() {
-        debug!("Breakpoint");
-        loop {
-            let mut bp = crate::hooks::BREAKPOINT_ACTIVE.lock().unwrap();
-            if !*bp {
-                *bp = true;
-                break;
-            }
+/// Halts execution to the point of breakpoint disarming
+#[sqfn]
+fn SpinLockBreakpoint() {
+    debug!("Breakpoint");
+    loop {
+        let mut bp = crate::hooks::BREAKPOINT_ACTIVE.lock().unwrap();
+        if !*bp {
+            *bp = true;
+            break;
         }
     }
 }

@@ -1,7 +1,7 @@
 use proc_macro2::Span;
 use quote::quote;
 use darling::{FromMeta, ToTokens};
-use syn::{AttributeArgs, ItemFn, parse_macro_input, Ident, Visibility, FnArg};
+use syn::{AttributeArgs, ItemFn, parse_macro_input, Ident, Visibility, FnArg, Pat};
 
 #[derive(Debug, FromMeta)]
 pub struct SQFnMacroArgs {
@@ -36,12 +36,14 @@ pub fn sqfn_impl(
         |a| if let FnArg::Typed(a) = a {
             debug_args_fmt += 
                 &format!("{} = {{:?}}; ", &a.pat.to_token_stream().to_string());
-            (a.ty, a.pat)
+            if let Pat::Ident(p) = *a.pat {
+                (a.ty, p.ident)
+            } else { todo!("patterns other then Ident is unsupported") }
         } else { todo!() }
     ).collect();
 
     let normal_arg_types = normal_args.iter().map(|(t, _)| t);
-    let normal_arg_pats: Vec<_> = normal_args.iter().map(|(_, p)| p).collect();
+    let normal_arg_idents: Vec<_> = normal_args.iter().map(|(_, p)| p).collect();
 
     let arg_idx = 0..normal_args.len();
 
@@ -83,9 +85,16 @@ pub fn sqfn_impl(
                 let top = vm.stack_len();
                 let norm_argc = #norm_argc as i32;
 
-                #(
+                // Stack layout (class method with 2 args): 
+                // 1: this TODO: Check if all functions has class or table instance
+                // 2: arg0
+                // 3: arg1 <-- top
+                // ?: popped userdata with method ptr 
+                // technically, all functions has varargs by default
+
+                #(  // normal (rust) args indexes: 2..2+norm_argc
                     let idx = #arg_idx as i32 + 2;
-                    let #normal_arg_pats: #normal_arg_types = match vm.get(idx) {
+                    let #normal_arg_idents: #normal_arg_types = match vm.get(idx) {
                         Ok(a) => a,
                         Err(e) => {
                             vm.throw(e.context(
@@ -95,7 +104,7 @@ pub fn sqfn_impl(
                     }};
                 )*
 
-                #( 
+                #(  // vararg (rust) indexes: norm_argc+2..=top
                     let mut #varargs = vec![]; 
                     for i in norm_argc+2..=top {
                         let val: DynSqVar = match vm.get(i) {
@@ -110,12 +119,14 @@ pub fn sqfn_impl(
                     }
                 )*
 
+                // Print arguments and their count
                 debug!(target: stringify!(#original_name),
-                    #debug_args_fmt, top, #( #normal_arg_pats ),*, #( #varargs )*
+                    #debug_args_fmt, top, #( #normal_arg_idents, )* #( #varargs )*
                 );
 
-                let ret = Self::rust_fn(#( #normal_arg_pats ),*, #( #varargs )*);
+                let ret = Self::rust_fn(#( #normal_arg_idents, )* #( #varargs )*);
 
+                // if return type exists, push it and return 1
                 #( 
                     let _: #ret_type;
                     if let Err(e) = vm.push(ret) {

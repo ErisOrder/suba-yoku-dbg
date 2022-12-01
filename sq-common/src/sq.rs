@@ -739,6 +739,6 @@ impl SqGet<DynSqVar> for SQVm {
 
 
 /// C SQFunction type 
-pub type SQFn = unsafe extern "cdecl" fn(HSQUIRRELVM) -> SQInteger;
+pub type SQFn = unsafe extern "C" fn(HSQUIRRELVM) -> SQInteger;
 
 
