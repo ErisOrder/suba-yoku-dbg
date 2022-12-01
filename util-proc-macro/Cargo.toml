@@ -1,0 +1,15 @@
+[package]
+name = "util-proc-macro"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "util_proc_macro"
+path = "src/lib.rs"
+proc-macro = true
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+syn = "1"
+quote = "1"
+proc-macro2 = "1"
