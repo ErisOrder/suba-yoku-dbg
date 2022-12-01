@@ -4,6 +4,7 @@ use log::debug;
 use region::Protection;
 use anyhow::Result;
 use lazy_static::lazy_static;
+use util_proc_macro::sqfn;
 
 use crate::{sq_gen_mod, wrappers, sq_bind_method};
 
@@ -304,4 +305,9 @@ sq_gen_mod! {
             }
         }
     }
+}
+
+#[sqfn(varargs = "varargs")]
+fn TestProcMacro(s: String) -> String {
+    s
 }

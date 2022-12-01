@@ -7,10 +7,12 @@ members = [
 [workspace.dependencies]
 squirrel2-kaleido-rs = { git = "https://github.com/nikvoid/squirrel2-kaleido-rs" }
 sq-common = { path = "sq-common" }
+util-proc-macro = { path = "util-proc-macro" }
 anyhow = "1.0.66"
 libc = "0.2.137"
 pretty_env_logger = "0.4.0"
 log = "0.4.17"
+
 
 [profile.release]
 panic = "abort"
