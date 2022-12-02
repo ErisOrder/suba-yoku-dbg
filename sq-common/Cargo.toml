@@ -9,3 +9,5 @@ edition = "2021"
 squirrel2-kaleido-rs = { workspace = true }
 anyhow = { workspace = true }
 libc = { workspace = true }
+util-proc-macro = { workspace = true }
+log = { workspace = true }

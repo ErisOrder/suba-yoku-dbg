@@ -1,7 +1,7 @@
 use proc_macro2::Span;
 use quote::quote;
 use darling::{FromMeta, ToTokens};
-use syn::{AttributeArgs, ItemFn, parse_macro_input, Ident, Visibility, FnArg, Pat};
+use syn::{AttributeArgs, ItemFn, parse_macro_input, Ident, Visibility, FnArg, Pat, Path};
 
 #[derive(Debug, FromMeta)]
 pub struct SQFnMacroArgs {
@@ -9,6 +9,40 @@ pub struct SQFnMacroArgs {
     vm_var: Option<String>,
     #[darling(default)]
     varargs: Option<String>,
+    #[darling(default)]
+    sq_wrap_path: Option<String>,
+    #[darling(default)]
+    sq_lib_path: Option<String>
+}
+
+#[derive(Debug, FromMeta)]
+pub struct SQSetModArgs {
+    #[darling(default)]
+    sq_wrap_path: Option<String>,
+    #[darling(default)]
+    sq_lib_path: Option<String>
+}
+
+static mut SQ_WRAPPER_MOD: Option<String> = None;
+static mut SQ_LIB_MOD: Option<String> = None;
+
+pub fn sq_set_mod_impl(args: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    let attr_args = parse_macro_input!(args as AttributeArgs);
+
+    let args = match SQSetModArgs::from_list(&attr_args) {
+        Ok(v) => v,
+        Err(e) => { return proc_macro::TokenStream::from(e.write_errors()); }
+    };
+
+    if let Some(s) = args.sq_lib_path {
+        unsafe { SQ_LIB_MOD = Some(s) }
+    }
+
+    if let Some(s) = args.sq_wrap_path {
+        unsafe { SQ_WRAPPER_MOD = Some(s) }
+    }
+
+    quote! {}.into()
 }
 
 pub fn sqfn_impl(
@@ -23,10 +57,32 @@ pub fn sqfn_impl(
         Err(e) => { return proc_macro::TokenStream::from(e.write_errors()); }
     };
 
+    // meshok vintov
+    // intergral shcema
+    // programmer book
+
     let original_name = item.sig.ident;
     let original_vis = item.vis;
     item.sig.ident = Ident::new("rust_fn", Span::call_site());
     item.vis = Visibility::from_string("pub").unwrap();
+
+    let sq_wrapper_mod = {
+        let wrapper_path = 
+        if let Some(ref s) = args.sq_wrap_path { s }
+        else if let Some(s) = unsafe { &SQ_WRAPPER_MOD } { s }
+        else { "sq_common" }; 
+        
+        Path::from_string(wrapper_path).expect("failed to parse sq wrapper path")
+    };
+
+    let sq_lib_mod = {
+        let lib_path = 
+        if let Some(ref s) = args.sq_lib_path { s }
+        else if let Some(s) = unsafe { &SQ_LIB_MOD } { s }
+        else { "squirrel2_kaleido_rs" }; 
+
+        Path::from_string(lib_path).expect("failed to parse sq lib path")
+    };
 
     let norm_argc = item.sig.inputs.len();
 
@@ -50,7 +106,7 @@ pub fn sqfn_impl(
     let varargs = match args.varargs {
         Some(s) => {
             let ident = Ident::new(&s, Span::call_site());
-            let arg = quote!{ mut #ident: Vec<sq_common::DynSqVar> }.into();
+            let arg = quote!{ mut #ident: Vec<#sq_wrapper_mod::DynSqVar> }.into();
             item.sig.inputs.push(parse_macro_input!( arg as FnArg ));
             debug_args_fmt += &format!("{s} = {{:?}}; ");
             vec![ident]
@@ -63,6 +119,18 @@ pub fn sqfn_impl(
         syn::ReturnType::Type(_, ref t) => vec![t.clone()],
     };
 
+    let (vm_ident, vm_option) = match args.vm_var {
+        Some(s) => {
+            let ident = Ident::new(&s, Span::call_site());
+
+            let arg = quote!{ #ident: &mut #sq_wrapper_mod::SQVm }.into();
+            item.sig.inputs.push(parse_macro_input!( arg as FnArg ));
+            let i = ident.clone();
+            (ident, vec![i])
+        },
+        None => (Ident::new("sqvm", Span::call_site()), vec![]),
+    };
+
     quote! {
         #original_vis struct #original_name;
 
@@ -73,16 +141,19 @@ pub fn sqfn_impl(
             pub unsafe extern "C" fn sq_fn(
                 hvm: squirrel2_kaleido_rs::HSQUIRRELVM
             ) -> squirrel2_kaleido_rs::SQInteger {
-                use std::collections::HashMap;
-                use squirrel2_kaleido_rs::*;
-                use sq_common::*;
                 use log::debug;
+                use #sq_lib_mod::*;
+                use #sq_wrapper_mod::*;
 
-                let mut vm = SQVm::from_handle(hvm);
+                let mut #vm_ident = SQVm::from_handle(hvm);
+
+                // Cannot be closed if passed to method
+                #vm_ident.set_safety(VmSafety::Friend);
+
                 // pop unused userdata with method
-                vm.pop(1);
+                #vm_ident.pop(1);
 
-                let top = vm.stack_len();
+                let top = #vm_ident.stack_len();
                 let norm_argc = #norm_argc as i32;
 
                 // Stack layout (class method with 2 args): 
@@ -94,10 +165,10 @@ pub fn sqfn_impl(
 
                 #(  // normal (rust) args indexes: 2..2+norm_argc
                     let idx = #arg_idx as i32 + 2;
-                    let #normal_arg_idents: #normal_arg_types = match vm.get(idx) {
+                    let #normal_arg_idents: #normal_arg_types = match #vm_ident.get(idx) {
                         Ok(a) => a,
                         Err(e) => {
-                            vm.throw(e.context(
+                            #vm_ident.throw(e.context(
                                 format!("problem with argument {}", idx)
                             ));
                             return -1;
@@ -107,10 +178,10 @@ pub fn sqfn_impl(
                 #(  // vararg (rust) indexes: norm_argc+2..=top
                     let mut #varargs = vec![]; 
                     for i in norm_argc+2..=top {
-                        let val: DynSqVar = match vm.get(i) {
+                        let val: DynSqVar = match #vm_ident.get(i) {
                             Ok(a) => a,
                             Err(e) => {
-                                vm.throw(e.context(
+                                #vm_ident.throw(e.context(
                                     format!("problem with vararg {}", i)
                                 ));
                                 return -1;
@@ -124,13 +195,13 @@ pub fn sqfn_impl(
                     #debug_args_fmt, top, #( #normal_arg_idents, )* #( #varargs )*
                 );
 
-                let ret = Self::rust_fn(#( #normal_arg_idents, )* #( #varargs )*);
+                let ret = Self::rust_fn(#( #normal_arg_idents, )* #( #varargs,)* #(&mut #vm_option)* );
 
                 // if return type exists, push it and return 1
                 #( 
                     let _: #ret_type;
-                    if let Err(e) = vm.push(ret) {
-                        vm.throw(e.context("failed to push return value"));
+                    if let Err(e) = #vm_ident.push(ret) {
+                        #vm_ident.throw(e.context("failed to push return value"));
                         return -1;
                     }
                     return 1;

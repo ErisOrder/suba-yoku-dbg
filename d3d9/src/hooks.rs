@@ -315,7 +315,7 @@ fn SpinLockBreakpoint() {
     }
 }
 
-#[sqfn(varargs = "varargs")]
+#[sqfn(varargs = "varargs", vm_var = "vm")]
 fn TestProcMacro(s: String) -> String {
     s
 }

@@ -1,5 +1,6 @@
 use anyhow::{bail, Context};
 use squirrel2_kaleido_rs::*;
+use util_proc_macro::sqfn;
 use std::{ptr::addr_of_mut, cmp::Ordering, collections::HashMap, hash::Hash};
 use anyhow::{
     Result,
@@ -18,6 +19,17 @@ macro_rules! sq_try {
 }
 
 pub type SqUserData = Vec<u8>; 
+pub type SqDebugHook = dyn Fn(DebugEvent, Option<String>);
+
+/// C SQFunction type 
+pub type SQFn = unsafe extern "C" fn(HSQUIRRELVM) -> SQInteger;
+
+pub enum DebugEvent {
+    Line(SQInteger),
+    FnCall(String),
+    FnRet(String),
+}
+
 
 /// Rust-adapted SQObjectType enum
 #[derive(Copy, Clone, PartialEq, PartialOrd, Eq, Ord, Debug, Hash)]
@@ -77,6 +89,7 @@ pub struct SQVm {
     handle: HSQUIRRELVM,
     /// If [VmSafety::Safe], close VM on drop
     safety: VmSafety,
+    debug_hook: Option<Box<SqDebugHook>>
 }
 
 pub enum ExecState {
@@ -93,8 +106,11 @@ impl Drop for SQVm {
 #[allow(unused)]
 impl SQVm {
     /// Create struct from raw pointer to vm instance, by default [Unsafe](VmSafety::Unsafe) vm
+    /// 
+    /// ## Safety
+    /// Unsafe VM does not closed at drop
     pub unsafe fn from_handle(handle: HSQUIRRELVM) -> Self {
-        Self { handle, safety: VmSafety::Unsafe }
+        Self { handle, safety: VmSafety::Unsafe, debug_hook: None }
     }
 
     /// Get internal vm handle
@@ -102,13 +118,19 @@ impl SQVm {
         self.handle
     }
 
+    pub unsafe fn set_safety(&mut self, safety: VmSafety) {
+        self.safety = safety;
+    }
+
     /// Creates a new instance of a squirrel VM that consists in a new execution stack.
     /// 
     /// Returns [Safe](VmSafety::Safe) VM
     pub fn open(initial_stack_size: usize) -> Self {
-        Self {
-            handle: unsafe { sq_open(initial_stack_size as _) },
-            safety: VmSafety::Safe,
+        unsafe {
+            let handle = sq_open(initial_stack_size as _);
+            let mut s = Self::from_handle(handle);
+            s.set_safety(VmSafety::Safe);
+            s
         }
     }
  
@@ -166,8 +188,12 @@ impl SQVm {
     /// and pushes it in its stack as "thread" object.
     /// Returns [Friend](VmSafety::Friend) VM
     pub fn new_thread(&mut self, initial_stack_size: usize) -> Self {
-        let handle = unsafe { sq_newthread(self.handle, initial_stack_size as _) };
-        Self { handle, safety: VmSafety::Friend }
+        unsafe {
+            let handle = sq_newthread(self.handle, initial_stack_size as _); 
+            let mut s = Self::from_handle(handle);
+            s.set_safety(VmSafety::Friend);
+            s 
+        }
     }
 }
 
@@ -183,6 +209,42 @@ impl SQVm {
     pub fn throw_error(&mut self, mut msg: String) {
         msg.push('\0');
         unsafe { sq_throwerror(self.handle, msg.as_ptr() as _); }
+    }
+
+    /// Set VM debug hook that will be called for each line and function call/return
+    /// 
+    /// In order to receive a 'per line' callback, is necessary 
+    /// to compile the scripts with the line informations. 
+    /// Without line informations activated, only the 'call/return' callbacks will be invoked.
+    pub fn set_debug_hook(&mut self, hook: Box<SqDebugHook>) {
+        if self.safety != VmSafety::Safe {
+            panic!("only safe vm can have debughook");
+        }
+
+        self.debug_hook = Some(hook);
+
+        // TODO: Make optional-nullable arguments
+        #[sqfn(vm_var = "vm", sq_lib_path = "squirrel2_kaleido_rs", sq_wrap_path = "self")]
+        fn DebugHook(event_type: SQInteger, src_file: DynSqVar, line: DynSqVar, funcname: DynSqVar) {
+            let event = match char::from_u32(event_type as u32).unwrap() {
+                'l' => DebugEvent::Line(0),
+                'c' => DebugEvent::FnCall(format!("{funcname:?}")),
+                'r' => DebugEvent::FnRet(format!("{funcname:?}")),
+                e => panic!("unknown debug event: {e}"),
+            };
+
+            let src_file = 
+            if let DynSqVar::String(s) = src_file { Some(s) } else { None };
+            
+            if let Some(ref hook) = vm.debug_hook {
+                hook(event, src_file);
+            }
+        }
+
+        unsafe {
+            sq_newclosure(self.handle, Some(DebugHook::sq_fn), 0);
+            sq_setdebughook(self.handle);
+        }
     }
 }
 
@@ -216,6 +278,9 @@ impl SQVm {
     }
 
     /// Resize the stack, if new `top` is bigger then the current top the function will push nulls.
+    /// 
+    /// ## Safety
+    /// VM execution may fail if stack resize is unexpected
     pub unsafe fn set_stack_top(&mut self, top: usize) {
         sq_settop(self.handle, top as _)
     }
@@ -302,7 +367,7 @@ impl SQVm {
 }
 
 /// Unsafe object manipulation
-#[allow(unused)]
+#[allow(unused, clippy::missing_safety_doc)]
 impl SQVm {
     /// Pushes a null value into the stack
     #[inline]
@@ -737,8 +802,5 @@ impl SqGet<DynSqVar> for SQVm {
     }
 }
 
-
-/// C SQFunction type 
-pub type SQFn = unsafe extern "C" fn(HSQUIRRELVM) -> SQInteger;
 
 

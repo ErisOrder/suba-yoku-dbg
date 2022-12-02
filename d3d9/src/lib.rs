@@ -10,6 +10,8 @@ mod wrappers;
 mod util;
 mod hooks;
 
+util_proc_macro::set_sqfn_paths! (sq_lib_path = "sq_common", sq_wrap_path = "squirrel2_kaleido_rs" );
+
 type D3D9CreateFn = unsafe extern "stdcall" fn(UINT) -> *mut IDirect3D9;
 
 lazy_static! {
