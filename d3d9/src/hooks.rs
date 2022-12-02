@@ -223,6 +223,7 @@ gen_hook! {
             sq_bind_method!(bind_fn, SQ_TAB_PTR, TestUserData);
             sq_bind_method!(bind_fn, SQ_TAB_PTR, TestCreateUserData);
             sq_bind_method!(bind_fn, SQ_TAB_PTR, SpinLockBreakpoint);
+            sq_bind_method!(bind_fn, SQ_TAB_PTR, TestOption);
         }
     }
 }
@@ -315,7 +316,12 @@ fn SpinLockBreakpoint() {
     }
 }
 
-#[sqfn(varargs = "varargs", vm_var = "vm")]
-fn TestProcMacro(s: String) -> String {
-    s
+#[sqfn]
+fn TestOption(s: Option<String>) -> String {
+    match s {
+        Some(s) => debug!("Received {s}"),
+        None => debug!("Received null"),
+    }
+
+    "".into()
 }

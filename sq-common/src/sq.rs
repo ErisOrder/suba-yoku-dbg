@@ -225,16 +225,18 @@ impl SQVm {
 
         // TODO: Make optional-nullable arguments
         #[sqfn(vm_var = "vm", sq_lib_path = "squirrel2_kaleido_rs", sq_wrap_path = "self")]
-        fn DebugHook(event_type: SQInteger, src_file: DynSqVar, line: DynSqVar, funcname: DynSqVar) {
+        fn DebugHook(
+            event_type: SQInteger,
+            src_file: Option<String>,
+            line: Option<SQInteger>,
+            funcname: Option<String>
+        ) {
             let event = match char::from_u32(event_type as u32).unwrap() {
-                'l' => DebugEvent::Line(0),
-                'c' => DebugEvent::FnCall(format!("{funcname:?}")),
-                'r' => DebugEvent::FnRet(format!("{funcname:?}")),
+                'l' => DebugEvent::Line(line.unwrap()),
+                'c' => DebugEvent::FnCall(funcname.unwrap_or_else(|| "??".into())),
+                'r' => DebugEvent::FnRet(funcname.unwrap_or_else(|| "??".into())),
                 e => panic!("unknown debug event: {e}"),
             };
-
-            let src_file = 
-            if let DynSqVar::String(s) = src_file { Some(s) } else { None };
             
             if let Some(ref hook) = vm.debug_hook {
                 hook(event, src_file);
@@ -708,6 +710,30 @@ impl SqGet<SqUserData> for SQVm {
     }
 }
 
+impl<T> SqPush<Option<T>> for SQVm 
+where 
+    SQVm: SqPush<T>
+{
+    fn push(&mut self, val: Option<T>) -> Result<()> {
+        match val {
+            Some(v) => self.push(v),
+            None => SqPush::<SQNull>::push(self, SQNull),
+        }
+    }
+}
+
+impl<T> SqGet<Option<T>> for SQVm 
+where
+    SQVm: SqGet<T>
+{
+    fn get(&mut self, idx: SQInteger) -> Result<Option<T>> {
+        if SqGet::<SQNull>::get(self, idx).is_ok() {
+            Ok(None)
+        } else {
+            Ok(Some(SqGet::<T>::get(self, idx)?))
+        }
+    }
+}
 
 #[derive(Clone, Debug)]
 pub enum DynSqVar {
