@@ -7,9 +7,10 @@ use winapi::{um::{
     wincontypes,
     winbase,
     wingdi,
+    winnt,
     psapi,
-    winnt::HANDLE, processthreadsapi::GetCurrentProcess, 
-}, shared::minwindef::{FALSE, HMODULE, DWORD}};
+    winnt::HANDLE, processthreadsapi as ptapi, 
+}, shared::minwindef::{FALSE, HMODULE, DWORD, TRUE}};
 use anyhow::Result;
 
 // TODO: Optimize this macro
@@ -94,7 +95,7 @@ pub fn get_system_directory() -> String {
 
 pub fn get_base_mod_addr() -> Result<*mut u8> {
 
-    let proc = handle_or_err! { unsafe GetCurrentProcess() }?;
+    let proc = handle_or_err! { unsafe ptapi::GetCurrentProcess() }?;
 
     let mut handles = [0 as HMODULE; 256];
     let mut lpcb_needed: DWORD = 0;
@@ -107,4 +108,32 @@ pub fn get_base_mod_addr() -> Result<*mut u8> {
     )}?;
     
     Ok(handles[0] as *mut u8)
+}
+
+pub struct ThreadHandle(HANDLE);
+
+impl ThreadHandle {
+    pub fn open(id: DWORD) -> Result<Self> {
+        Ok(Self(
+            handle_or_err! { unsafe
+                 ptapi::OpenThread(winnt::THREAD_ALL_ACCESS, TRUE, id)
+            }?
+        ))
+    }
+
+    //pub fn close(self) -> Result<()> {
+    //    
+    //}
+
+    pub fn suspend(&mut self) {
+        unsafe {
+            ptapi::SuspendThread(self.0);
+        }
+    }
+
+    pub fn resume(&mut self) {
+        unsafe {
+            ptapi::ResumeThread(self.0);
+        }
+    }
 }

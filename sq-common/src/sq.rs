@@ -24,6 +24,7 @@ pub type SqDebugHook = dyn Fn(DebugEvent, Option<String>);
 /// C SQFunction type 
 pub type SQFn = unsafe extern "C" fn(HSQUIRRELVM) -> SQInteger;
 
+#[derive(Clone, PartialEq, PartialOrd, Eq, Ord, Debug, Hash)]
 pub enum DebugEvent {
     Line(SQInteger),
     FnCall(String),
@@ -92,6 +93,7 @@ pub struct SQVm {
     debug_hook: Option<Box<SqDebugHook>>
 }
 
+unsafe impl Send for SQVm {}
 pub enum ExecState {
  
 }
@@ -114,7 +116,7 @@ impl SQVm {
     }
 
     /// Get internal vm handle
-    pub fn get_handle(self) -> HSQUIRRELVM {
+    pub fn get_handle(&self) -> HSQUIRRELVM {
         self.handle
     }
 
@@ -244,8 +246,8 @@ impl SQVm {
         }
 
         unsafe {
-            sq_newclosure(self.handle, Some(DebugHook::sq_fn), 0);
-            sq_setdebughook(self.handle);
+            self.new_closure(DebugHook::sq_fn, 0);
+            self.set_debug_hook_raw();
         }
     }
 }
@@ -366,6 +368,11 @@ impl SQVm {
             bail!("Failed to iterate using iterator at index {idx}")
         }
     }
+
+    /// Pushes the current root table in the stack
+    pub fn push_root_table(&mut self) {
+        unsafe { sq_pushroottable(self.handle) }
+    } 
 }
 
 /// Unsafe object manipulation
@@ -477,8 +484,22 @@ impl SQVm {
             sq_getsize(self.handle, idx)
         }.context(format!("Failed to get size of value at idx {idx}"))
     }
-}
 
+    /// Pops a closure from the stack an sets it as debug hook
+    /// 
+    /// In order to receive a 'per line' callback, is necessary 
+    /// to compile the scripts with theline informations. 
+    /// Without line informations activated, only the 'call/return' callbacks will be invoked.
+    pub unsafe fn set_debug_hook_raw(&mut self) {
+        sq_setdebughook(self.handle);
+    }
+
+    /// Create a new native closure, pops `free_vars` values and set those
+    /// as free variables of the new closure, and push the new closure in the stack
+    pub unsafe fn new_closure(&mut self, f: SQFn, free_vars: SQUnsignedInteger) {
+        sq_newclosure(self.handle, Some(f), free_vars)
+    }
+}
 
 pub trait SqPush<T> {
     /// Push a value to the vm stack
@@ -507,6 +528,13 @@ impl SqThrow<anyhow::Error> for SQVm {
                 msg
             });
         self.throw_error(msg);
+    }
+}
+
+impl SqPush<SQFn> for SQVm {
+    fn push(&mut self, val: SQFn) -> Result<()> {
+        unsafe { self.new_closure(val, 0) }
+        Ok(())
     }
 }
 

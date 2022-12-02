@@ -2,6 +2,7 @@
 #![feature(abi_thiscall)]
 #![feature(macro_metavar_expr)]
 
+use log::debug;
 use winapi::shared::minwindef::{BOOL, DWORD, HINSTANCE, LPVOID, UINT, TRUE};
 use winapi::shared::d3d9::IDirect3D9;
 use lazy_static::lazy_static;
@@ -16,7 +17,7 @@ type D3D9CreateFn = unsafe extern "stdcall" fn(UINT) -> *mut IDirect3D9;
 
 lazy_static! {
     static ref D3D9_LIB: libloading::Library = {
-        println!("Loading D3D9 lib");
+        debug!("Loading D3D9 lib");
         let mut sys_dir = wrappers::get_system_directory();
         sys_dir.push_str("\\d3d9.dll");
         unsafe { libloading::Library::new(sys_dir).expect("failed to load d3d9 library") }
@@ -81,42 +82,72 @@ fn dll_init() {
     unsafe {
         hooks::hook_sq_printf()
             .expect("failed to install hook");
-        println!("printf hook installed");
+        debug!("printf hook installed");
 
         hooks::hook_text()
             .expect("failed to install hook");
-        println!("text hook installed");
+        debug!("text hook installed");
 
         hooks::hook_bind()
             .expect("failed to install hook");
-        println!("bind hook installed");
+        debug!("bind hook installed");
+
+        hooks::hook_vm_init()
+            .expect("failed to install hook");
+        debug!("vm init hook installed");
     }
 
     std::thread::spawn(|| {
+        debug!("Spawning key listener");
+
         let mut listener = util::KeyListener::new();
 
         listener.register_cb('T' as u16, || {
             if let Ok(mut b) = hooks::TEXT_HOOK_ACTIVE.lock() {
                 *b = !*b;
-                if *b { println!("text (strcpy?) hook active"); } 
-                else { println!("text (strcpy?) hook disabled"); }
+                if *b { debug!("text (strcpy?) hook active"); } 
+                else { debug!("text (strcpy?) hook disabled"); }
             }
         });
 
         listener.register_cb('H' as u16, || {
             if let Ok(mut b) = hooks::PRINTF_HOOK_ACTIVE.lock() {
                 *b = !*b;
-                if *b { println!("printf hook active"); } 
-                else { println!("printf hook disabled"); }
+                if *b { debug!("printf hook active"); } 
+                else { debug!("printf hook disabled"); }
             }
         });
 
         listener.register_cb('B' as u16, || {
             if let Ok(mut b) = hooks::BREAKPOINT_ACTIVE.lock() {
                 *b = !*b;
-                if *b { println!("breakpoint armed"); } 
-                else { println!("breakpoint disarmed"); }
+                if *b { debug!("breakpoint armed"); } 
+                else { debug!("breakpoint disarmed"); }
             }
+        });
+
+        listener.register_cb('C' as u16, || {
+            let mut handle = wrappers::ThreadHandle::open(
+                unsafe { hooks::VM_THREAD_ID } as _
+            ).unwrap();
+            handle.suspend();
+            debug!("Suspended VM");
+        });
+
+        listener.register_cb('V' as u16, || {
+            let mut handle = wrappers::ThreadHandle::open(
+                unsafe { hooks::VM_THREAD_ID } as _
+            ).unwrap();
+            handle.resume();
+            debug!("Resumed VM");
+        });
+
+        listener.register_cb('N' as u16, || {
+            let mut vm = hooks::GAME_VM.lock().unwrap();
+            vm.set_debug_hook(Box::new(|e, src| {
+                debug!("{src:?}: {e:?}");
+            }));
+            debug!("debug hook set");
         });
 
         listener.listen();

@@ -1,4 +1,4 @@
-use std::sync::Mutex;
+use std::{sync::Mutex, ptr::addr_of_mut};
 use std::collections::HashMap;
 use dynasmrt::{dynasm, DynasmApi, AssemblyOffset};
 use log::debug;
@@ -23,12 +23,28 @@ const REG_FN_HOOK_OFFSET: usize = 0x9657B;
 const REG_FN_HOOK_SIZE: usize = 5;
 
 const SQ_BIND_FN_OFFSET: usize = 0xB5F0;
+const SQ_INIT_VM_FN_OFFSET:usize = 0x3E7A0;
+
+const SQ_VM_INIT_HOOK_OFFSET: usize = 0x4B125;
+const SQ_VM_INIT_HOOK_SIZE: usize = 5;
+
+static mut SQVM_PTR: usize = 0;
+pub static mut VM_THREAD_ID: usize = 0;
 
 const BASE_OFFSET: usize = 0x1000 - 0x400; // DataOffset - HeaderSize
 
 lazy_static! {
     static ref BASE_ADDR: usize = wrappers::get_base_mod_addr()
         .expect("failed to get base module (exe itself) address") as usize;
+    pub static ref GAME_VM: Mutex<SQVm> = if unsafe { SQVM_PTR } == 0 {
+        panic!("vm is uninitialized");
+    } else {
+        Mutex::new( unsafe { 
+            let mut vm = SQVm::from_handle(SQVM_PTR as _);
+            vm.set_safety(VmSafety::Safe);
+            vm
+        })
+    };
 }
 
 pub static TEXT_HOOK_ACTIVE: Mutex<bool> = Mutex::new(false);
@@ -188,8 +204,8 @@ gen_hook! {
     // need to call 
     hook_bind, REG_FN_HOOK_OFFSET, REG_FN_HOOK_SIZE, 0x200,
     prolog {
-        ; pop DWORD [&mut RET_ADDR as *mut usize as i32]
-        ; mov DWORD [&mut SQ_TAB_PTR as *mut usize as i32], ecx
+        ; pop DWORD [addr_of_mut!(RET_ADDR) as _]
+        ; mov DWORD [addr_of_mut!(SQ_TAB_PTR) as _], ecx
         ; mov eax, DWORD fixed_bind_fn as _
         ; call eax 
     }
@@ -208,7 +224,7 @@ gen_hook! {
         let fixed_bind_fn = fixup_addr(SQ_BIND_FN_OFFSET);
 
         unsafe extern "stdcall" fn bind(func_: *const u8) {
-            debug!(target: "bind_hook", "called stub, sq ptr: 0x{:X}", SQ_TAB_PTR);
+            debug!(target: "bind_hook", "called stub, sqrat ptr: 0x{SQ_TAB_PTR:X}, sqvm ptr: {SQVM_PTR:X}");
 
             let bind_fn: crate::util::BindSQFnFn = std::mem::transmute(func_); 
 
@@ -224,6 +240,25 @@ gen_hook! {
             sq_bind_method!(bind_fn, SQ_TAB_PTR, TestCreateUserData);
             sq_bind_method!(bind_fn, SQ_TAB_PTR, SpinLockBreakpoint);
             sq_bind_method!(bind_fn, SQ_TAB_PTR, TestOption);
+        }
+    }
+}
+
+gen_hook! {
+    hook_vm_init, SQ_VM_INIT_HOOK_OFFSET, SQ_VM_INIT_HOOK_SIZE, 0x200,
+    prolog {
+        ; mov eax, fixup_addr(SQ_INIT_VM_FN_OFFSET) as _
+        ; call eax
+        ; mov DWORD [addr_of_mut!(SQVM_PTR) as _], eax
+    }
+    body {
+        ; mov eax, get_thread as _
+        ; call eax
+    }
+    inner {
+        unsafe extern "stdcall" fn get_thread() {
+            let id = winapi::um::processthreadsapi::GetCurrentThreadId();
+            VM_THREAD_ID = id as _;
         }
     }
 }
