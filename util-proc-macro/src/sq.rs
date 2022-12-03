@@ -127,7 +127,7 @@ pub fn sqfn_impl(
         Some(s) => {
             let ident = Ident::new(&s, Span::call_site());
 
-            let arg = quote!{ #ident: &mut #sq_wrapper_mod::SQVm }.into();
+            let arg = quote!{ #ident: &mut #sq_wrapper_mod::FriendVm }.into();
             item.sig.inputs.push(parse_macro_input!( arg as FnArg ));
             let i = ident.clone();
             (ident, vec![i])
@@ -152,10 +152,8 @@ pub fn sqfn_impl(
                 use #sq_lib_mod::*;
                 use #sq_wrapper_mod::*;
 
-                let mut #vm_ident = SQVm::from_handle(hvm);
-
                 // Cannot be closed if passed to method
-                #vm_ident.set_safety(VmSafety::Friend);
+                let mut #vm_ident = UnsafeVm::from_handle(hvm).into_friend();
 
                 // pop unused userdata with method
                 // TODO: Maybe just write this as last fn arg

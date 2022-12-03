@@ -142,6 +142,7 @@ fn dll_init() {
             debug!("Resumed VM");
         });
 
+        
         listener.register_cb('N' as u16, || {
             let mut vm = hooks::GAME_VM.lock().unwrap();
             vm.set_debug_hook(Box::new(|e, src| {
@@ -149,6 +150,7 @@ fn dll_init() {
             }));
             debug!("debug hook set");
         });
+        
 
         listener.listen();
     });

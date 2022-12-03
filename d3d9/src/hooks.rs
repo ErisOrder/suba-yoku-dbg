@@ -36,13 +36,12 @@ const BASE_OFFSET: usize = 0x1000 - 0x400; // DataOffset - HeaderSize
 lazy_static! {
     static ref BASE_ADDR: usize = wrappers::get_base_mod_addr()
         .expect("failed to get base module (exe itself) address") as usize;
-    pub static ref GAME_VM: Mutex<SQVm> = if unsafe { SQVM_PTR } == 0 {
+    pub static ref GAME_VM: Mutex<SafeVm> = if unsafe { SQVM_PTR } == 0 {
         panic!("vm is uninitialized");
     } else {
         Mutex::new( unsafe { 
-            let mut vm = SQVm::from_handle(SQVM_PTR as _);
-            vm.set_safety(VmSafety::Safe);
-            vm
+            let vm = UnsafeVm::from_handle(SQVM_PTR as _);
+            vm.into_safe()
         })
     };
 }
@@ -228,6 +227,7 @@ gen_hook! {
 
             let bind_fn: crate::util::BindSQFnFn = std::mem::transmute(func_); 
 
+            
             sq_bind_method!(bind_fn, SQ_TAB_PTR, SingleArg);
             sq_bind_method!(bind_fn, SQ_TAB_PTR, TestFunction);
             sq_bind_method!(bind_fn, SQ_TAB_PTR, TestArgs);
@@ -240,6 +240,7 @@ gen_hook! {
             sq_bind_method!(bind_fn, SQ_TAB_PTR, TestCreateUserData);
             sq_bind_method!(bind_fn, SQ_TAB_PTR, SpinLockBreakpoint);
             sq_bind_method!(bind_fn, SQ_TAB_PTR, TestOption);
+
         }
     }
 }
@@ -263,15 +264,18 @@ gen_hook! {
     }
 }
 
+
 #[sqfn(sqrat_method = true)]
 fn TestFunction() -> SQInteger {
     777
 }
 
+
 #[sqfn(sqrat_method = true)]
 fn SingleArg(a: SQInteger) -> SQInteger {
     a
 }
+
 
 #[sqfn(sqrat_method = true)]
 fn TestArgs(a1: SQInteger, a2: SQInteger) -> SQInteger {
@@ -327,9 +331,10 @@ fn TestTable(input: HashMap<DynSqVar, DynSqVar>) -> HashMap<DynSqVar, DynSqVar> 
     out
 }
 
+
 #[sqfn(sqrat_method = true)]
 fn TestCreateUserData() -> SqUserData {
-    "magic_string".to_string().into_bytes()
+    "magic_string".to_string().into_bytes().into()
 }
 
 #[sqfn(sqrat_method = true)]
@@ -359,4 +364,4 @@ fn TestOption(s: Option<String>) -> String {
     }
 
     "".into()
-}
+} 
