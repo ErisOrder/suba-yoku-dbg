@@ -1,7 +1,7 @@
 use anyhow::{bail, Context};
 use squirrel2_kaleido_rs::*;
 use util_proc_macro::sqfn;
-use std::{ptr::addr_of_mut, cmp::Ordering, collections::HashMap, hash::Hash};
+use std::{ptr::{addr_of_mut, addr_of}, cmp::Ordering, collections::HashMap, hash::Hash};
 use anyhow::{
     Result,
     anyhow
@@ -24,11 +24,15 @@ pub type SqDebugHook = dyn Fn(DebugEvent, Option<String>);
 /// C SQFunction type 
 pub type SQFn = unsafe extern "C" fn(HSQUIRRELVM) -> SQInteger;
 
+/// Event that VM debug hook may receive
 #[derive(Clone, PartialEq, PartialOrd, Eq, Ord, Debug, Hash)]
 pub enum DebugEvent {
+    /// Linenumber
     Line(SQInteger),
-    FnCall(String),
-    FnRet(String),
+    /// Function name, linenumber
+    FnCall(String, Option<SQInteger>),
+    /// Function name, linenumber
+    FnRet(String, Option<SQInteger>),
 }
 
 
@@ -120,6 +124,17 @@ impl SQVm {
         self.handle
     }
 
+    /// Forcefully set vm safety
+    /// 
+    /// ## Safety
+    /// Overriding default safety may result in undefined behaviour.
+    /// 
+    /// e.g. if vm debug hook was set, wrapper struct will be 
+    /// deallocated with boxed hook closure but vm won't be closed.
+    /// 
+    /// Or if wrapper was used just as convenient access point to
+    /// pointer of foreign vm, it might be closed and then freed memory
+    /// might be accessed 
     pub unsafe fn set_safety(&mut self, safety: VmSafety) {
         self.safety = safety;
     }
@@ -225,28 +240,36 @@ impl SQVm {
 
         self.debug_hook = Some(hook);
 
-        // TODO: Make optional-nullable arguments
-        #[sqfn(vm_var = "vm", sq_lib_path = "squirrel2_kaleido_rs", sq_wrap_path = "self")]
+        #[sqfn(sq_lib_path = "squirrel2_kaleido_rs", sq_wrap_path = "self")]
         fn DebugHook(
             event_type: SQInteger,
             src_file: Option<String>,
             line: Option<SQInteger>,
-            funcname: Option<String>
+            funcname: Option<String>,
+            closure_box: SQInteger, // "captured"
         ) {
             let event = match char::from_u32(event_type as u32).unwrap() {
                 'l' => DebugEvent::Line(line.unwrap()),
-                'c' => DebugEvent::FnCall(funcname.unwrap_or_else(|| "??".into())),
-                'r' => DebugEvent::FnRet(funcname.unwrap_or_else(|| "??".into())),
+                'c' => DebugEvent::FnCall(funcname.unwrap_or_else(|| "??".into()), line),
+                'r' => DebugEvent::FnRet(funcname.unwrap_or_else(|| "??".into()), line),
                 e => panic!("unknown debug event: {e}"),
             };
-            
-            if let Some(ref hook) = vm.debug_hook {
+
+            // Must be safe as long as wrapper bound with VM is alive
+            let hook_opt: &Option<Box<SqDebugHook>> = unsafe {
+                std::mem::transmute(closure_box as usize) 
+            };
+
+            if let Some(hook) = hook_opt {
                 hook(event, src_file);
             }
+
         }
 
+        self.push(addr_of!(self.debug_hook) as SQInteger).expect("Failed to push hook closure");
+
         unsafe {
-            self.new_closure(DebugHook::sq_fn, 0);
+            self.new_closure(DebugHook::sq_fn, 1);
             self.set_debug_hook_raw();
         }
     }

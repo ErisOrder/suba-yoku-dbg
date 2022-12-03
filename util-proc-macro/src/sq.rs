@@ -12,7 +12,11 @@ pub struct SQFnMacroArgs {
     #[darling(default)]
     sq_wrap_path: Option<String>,
     #[darling(default)]
-    sq_lib_path: Option<String>
+    sq_lib_path: Option<String>,
+    #[darling(default)]
+    print_args: bool,
+    #[darling(default)]
+    sqrat_method: bool,
 }
 
 #[derive(Debug, FromMeta)]
@@ -131,6 +135,9 @@ pub fn sqfn_impl(
         None => (Ident::new("sqvm", Span::call_site()), vec![]),
     };
 
+    let print_args = args.print_args;
+    let sqrat_method = args.sqrat_method;
+
     quote! {
         #original_vis struct #original_name;
 
@@ -151,7 +158,10 @@ pub fn sqfn_impl(
                 #vm_ident.set_safety(VmSafety::Friend);
 
                 // pop unused userdata with method
-                #vm_ident.pop(1);
+                // TODO: Maybe just write this as last fn arg
+                if #sqrat_method {
+                    #vm_ident.pop(1); 
+                }
 
                 let top = #vm_ident.stack_len();
                 let norm_argc = #norm_argc as i32;
@@ -191,9 +201,11 @@ pub fn sqfn_impl(
                 )*
 
                 // Print arguments and their count
-                debug!(target: stringify!(#original_name),
-                    #debug_args_fmt, top, #( #normal_arg_idents, )* #( #varargs )*
-                );
+                if #print_args {
+                    debug!(target: stringify!(#original_name),
+                        #debug_args_fmt, top, #( #normal_arg_idents, )* #( #varargs )*
+                    );
+                }
 
                 let ret = Self::rust_fn(#( #normal_arg_idents, )* #( #varargs,)* #(&mut #vm_option)* );
 

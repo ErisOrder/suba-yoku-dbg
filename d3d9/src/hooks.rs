@@ -263,28 +263,28 @@ gen_hook! {
     }
 }
 
-#[sqfn]
+#[sqfn(sqrat_method = true)]
 fn TestFunction() -> SQInteger {
     777
 }
 
-#[sqfn]
+#[sqfn(sqrat_method = true)]
 fn SingleArg(a: SQInteger) -> SQInteger {
     a
 }
 
-#[sqfn]
+#[sqfn(sqrat_method = true)]
 fn TestArgs(a1: SQInteger, a2: SQInteger) -> SQInteger {
     a1 + a2
 }
 
-#[sqfn]
+#[sqfn(sqrat_method = true)]
 fn TestString(mut s: String) -> String {
     s.push_str(" + addition");
     s
 }
 
-#[sqfn]
+#[sqfn(sqrat_method = true)]
 fn TestDyn(d: DynSqVar) -> DynSqVar {
     let s = match d {
         DynSqVar::Null => "Null".into(),
@@ -304,17 +304,17 @@ fn TestDyn(d: DynSqVar) -> DynSqVar {
     ])
 }
 
-#[sqfn]
+#[sqfn(sqrat_method = true)]
 fn TestStaticArr(a: Vec<SQInteger>) -> SQInteger {
     a.into_iter().sum()
 }
 
-#[sqfn(varargs = "varargs")]
+#[sqfn(varargs = "varargs", sqrat_method = true)]
 fn TestVarargs(_norm: DynSqVar) -> SQInteger {
     varargs.len() as _
 }
 
-#[sqfn]
+#[sqfn(sqrat_method = true)]
 fn TestTable(input: HashMap<DynSqVar, DynSqVar>) -> HashMap<DynSqVar, DynSqVar> {
     for (k, v) in input.into_iter() {
         debug!("table {k:?}: {v:?}");
@@ -327,19 +327,19 @@ fn TestTable(input: HashMap<DynSqVar, DynSqVar>) -> HashMap<DynSqVar, DynSqVar> 
     out
 }
 
-#[sqfn]
+#[sqfn(sqrat_method = true)]
 fn TestCreateUserData() -> SqUserData {
     "magic_string".to_string().into_bytes()
 }
 
-#[sqfn]
+#[sqfn(sqrat_method = true)]
 fn TestUserData(inp: SqUserData) -> SqUserData {
     debug!("Received userdata: {inp:?}");
     inp
 }
 
 /// Halts execution to the point of breakpoint disarming
-#[sqfn]
+#[sqfn(sqrat_method = true)]
 fn SpinLockBreakpoint() {
     debug!("Breakpoint");
     loop {
@@ -351,7 +351,7 @@ fn SpinLockBreakpoint() {
     }
 }
 
-#[sqfn]
+#[sqfn(sqrat_method = true)]
 fn TestOption(s: Option<String>) -> String {
     match s {
         Some(s) => debug!("Received {s}"),
