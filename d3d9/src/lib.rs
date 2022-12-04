@@ -2,6 +2,7 @@
 #![feature(abi_thiscall)]
 #![feature(macro_metavar_expr)]
 
+use sq_common::dbg;
 use log::debug;
 use winapi::shared::minwindef::{BOOL, DWORD, HINSTANCE, LPVOID, UINT, TRUE};
 use winapi::shared::d3d9::IDirect3D9;
@@ -131,7 +132,7 @@ fn dll_init() {
                 unsafe { hooks::VM_THREAD_ID } as _
             ).unwrap();
             handle.suspend();
-            debug!("Suspended VM");
+            debug!("Suspended VM thread");
         });
 
         listener.register_cb('V' as u16, || {
@@ -139,16 +140,24 @@ fn dll_init() {
                 unsafe { hooks::VM_THREAD_ID } as _
             ).unwrap();
             handle.resume();
-            debug!("Resumed VM");
+            debug!("Resumed VM thread");
         });
 
         
         listener.register_cb('N' as u16, || {
-            let mut vm = hooks::GAME_VM.lock().unwrap();
-            vm.set_debug_hook(Box::new(|e, src| {
-                debug!("{src:?}: {e:?}");
-            }));
-            debug!("debug hook set");
+            let Some(ref mut dbg) = 
+                *hooks::SQ_DEBUGGER.lock().unwrap() else { return };
+
+            match dbg.exec_state() {
+                dbg::ExecState::Running => {
+                    dbg.halt();
+                    debug!(target: "debugger", "Execution halted");
+                },
+                dbg::ExecState::Halted => {
+                    dbg.resume();
+                    debug!(target: "debugger", "Execution resumed");
+                },
+            }
         });
         
 

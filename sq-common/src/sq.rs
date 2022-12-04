@@ -34,7 +34,7 @@ impl From<Vec<u8>> for SqUserData {
     }
 }
 
-pub type SqDebugHook = dyn Fn(DebugEvent, Option<String>);
+pub type SqDebugHook<'a> = dyn Fn(DebugEvent, Option<String>) + Send + 'a;
 
 /// C SQFunction type 
 pub type SQFn = unsafe extern "C" fn(HSQUIRRELVM) -> SQInteger;
@@ -95,26 +95,27 @@ pub trait SqVmHandle {
 
 /// Safe wrapper around SQVM handle.
 /// Will be closed on drop 
-pub struct SafeVm {
+pub struct SafeVm<'a> {
     handle: HSQUIRRELVM,
-    debug_hook: Option<Box<SqDebugHook>>
+    debug_hook: Option<Box<Box<SqDebugHook<'a>>>>
 }
 
-unsafe impl Send for SafeVm {}
+/// It`s not safe, but it`s needed
+unsafe impl Send for SafeVm<'_> {}
 
-impl SqVmHandle for SafeVm {
+impl SqVmHandle for SafeVm<'_> {
     fn handle(&mut self) -> HSQUIRRELVM {
         self.handle
     }
 }
 
-impl Drop for SafeVm {
+impl Drop for SafeVm<'_> {
     fn drop(&mut self) {
         unsafe { sq_close(self.handle) }
     }
 }
 
-impl SafeVm {
+impl<'a> SafeVm<'a> {
     /// Creates a new instance of a squirrel VM that consists in a new execution stack.
     pub fn open(initial_stack_size: usize) -> Self {
         let handle = unsafe {
@@ -129,17 +130,23 @@ impl SafeVm {
     /// In order to receive a 'per line' callback, is necessary 
     /// to compile the scripts with the line informations. 
     /// Without line informations activated, only the 'call/return' callbacks will be invoked.
-    pub fn set_debug_hook(&mut self, hook: Box<SqDebugHook>) {
-        self.debug_hook = Some(hook);
+    pub fn set_debug_hook<'b>(&'b mut self, hook: Box<SqDebugHook<'a>>)
+    where 'a: 'b 
+    {
+        
+        // Indirection to make fat pointer usable through FFI
+        let hook_box = Box::new(hook); 
 
+        #[allow(clippy::borrowed_box)]
         #[sqfn(sq_lib_path = "squirrel2_kaleido_rs", sq_wrap_path = "self")]
         fn DebugHook(
             event_type: SQInteger,
             src_file: Option<String>,
             line: Option<SQInteger>,
             funcname: Option<String>,
-            closure_box: SQInteger, // "captured"
+            closure_box: SqUserData, // "captured"
         ) {
+
             let event = match char::from_u32(event_type as u32).unwrap() {
                 'l' => DebugEvent::Line(line.unwrap()),
                 'c' => DebugEvent::FnCall(funcname.unwrap_or_else(|| "??".into()), line),
@@ -147,18 +154,23 @@ impl SafeVm {
                 e => panic!("unknown debug event: {e}"),
             };
 
+            let closure_box: usize = unsafe { std::ptr::read(closure_box.unwrap().as_ptr() as _) };
+
             // Must be safe as long as wrapper bound with VM is alive
-            let hook_opt: &Option<Box<SqDebugHook>> = unsafe {
-                std::mem::transmute(closure_box as usize) 
+            let hook: &Box<SqDebugHook> = unsafe {
+                &*(closure_box as *mut _) 
             };
 
-            if let Some(hook) = hook_opt {
-                hook(event, src_file);
-            }
-
+            hook(event, src_file);
         }
 
-        self.push(addr_of!(self.debug_hook) as SQInteger).expect("Failed to push hook closure");
+        let raw = Box::leak(hook_box) as *mut _;
+        
+        // Just to drop it if hook reassigned
+        self.debug_hook = Some(unsafe { Box::from_raw(raw) });
+
+        let data: Vec<_> = (raw as usize).to_ne_bytes().into();
+        self.push(SqUserData::from(data)).expect("Failed to push hook closure box ptr");
 
         unsafe {
             self.new_closure(DebugHook::sq_fn, 1);
@@ -194,7 +206,7 @@ impl UnsafeVm {
 
     /// Transform into Safe VM.
     /// Safe Vm will be closed on drop
-    pub fn into_safe(self) -> SafeVm {
+    pub fn into_safe(self) -> SafeVm<'static> {
         SafeVm { handle: self.0, debug_hook: None }
     }
 
@@ -531,7 +543,7 @@ pub trait SqVmApi: SqVmErrorHandling {
         }
 }
 
-impl SqVmErrorHandling for SafeVm {}
+impl SqVmErrorHandling for SafeVm<'_> {}
 impl SqVmErrorHandling for UnsafeVm {}
 impl SqVmErrorHandling for FriendVm {}
 

@@ -9,6 +9,7 @@ use util_proc_macro::sqfn;
 
 use crate::{wrappers, sq_bind_method};
 use sq_common::*;
+use sq_common::dbg;
 use squirrel2_kaleido_rs::SQInteger;
 
 const CALL_SIZE: usize = 5;
@@ -36,15 +37,9 @@ const BASE_OFFSET: usize = 0x1000 - 0x400; // DataOffset - HeaderSize
 lazy_static! {
     static ref BASE_ADDR: usize = wrappers::get_base_mod_addr()
         .expect("failed to get base module (exe itself) address") as usize;
-    pub static ref GAME_VM: Mutex<SafeVm> = if unsafe { SQVM_PTR } == 0 {
-        panic!("vm is uninitialized");
-    } else {
-        Mutex::new( unsafe { 
-            let vm = UnsafeVm::from_handle(SQVM_PTR as _);
-            vm.into_safe()
-        })
-    };
 }
+
+pub static SQ_DEBUGGER: Mutex<Option<dbg::SqDebugger>> = Mutex::new(None); 
 
 pub static TEXT_HOOK_ACTIVE: Mutex<bool> = Mutex::new(false);
 pub static PRINTF_HOOK_ACTIVE: Mutex<bool> = Mutex::new(true);
@@ -224,6 +219,10 @@ gen_hook! {
 
         unsafe extern "stdcall" fn bind(func_: *const u8) {
             debug!(target: "bind_hook", "called stub, sqrat ptr: 0x{SQ_TAB_PTR:X}, sqvm ptr: {SQVM_PTR:X}");
+
+            let vm = UnsafeVm::from_handle(SQVM_PTR as _).into_safe();
+
+            *SQ_DEBUGGER.lock().unwrap() = Some(dbg::SqDebugger::attach(vm));
 
             let bind_fn: crate::util::BindSQFnFn = std::mem::transmute(func_); 
 
