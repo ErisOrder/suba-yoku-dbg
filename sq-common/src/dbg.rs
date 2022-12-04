@@ -1,4 +1,4 @@
-use std::{time::Duration, sync::{Arc, Mutex}};
+use std::{time::Duration, sync::{Arc, Mutex, mpsc}};
 
 use crate::sq::*;
 //use squirrel2_kaleido_rs::*;
@@ -11,9 +11,13 @@ pub enum ExecState {
     Halted
 }
 
+pub enum DebugMsg {
+    Step,
+}
 
 pub struct SqDebugger<'a>{
     exec_state: Arc<Mutex<ExecState>>,
+    msg_pipe: mpsc::Sender<DebugMsg>,
     vm: SafeVm<'a>,
 }
 
@@ -22,8 +26,11 @@ impl<'a> SqDebugger<'a>
 {
     pub fn attach(vm: SafeVm<'a>) -> SqDebugger<'a> {
 
+        let (tx, rx) = mpsc::channel();
+
         let mut dbg = Self {
             exec_state: Arc::new(Mutex::new(ExecState::Halted)),
+            msg_pipe: tx,
             vm,
         };
 
@@ -32,10 +39,11 @@ impl<'a> SqDebugger<'a>
         dbg.vm.set_debug_hook(Box::new(move |e, src| {
             debug!("{src:?}: {e:?}");
             
-            if *exec_state.lock().unwrap() == ExecState::Halted {
-                debug!("Waiting to continue...");
-            }
             loop {
+                if let Ok(msg) = rx.try_recv() { match msg {
+                    DebugMsg::Step => break,
+                }}
+
                 if *exec_state.lock().unwrap() == ExecState::Running {
                     break;
                 }
@@ -46,12 +54,16 @@ impl<'a> SqDebugger<'a>
         dbg
     }
 
-    pub fn resume(&mut self) {
+    pub fn resume(&self) {
         *self.exec_state.lock().unwrap() = ExecState::Running;
     }
 
-    pub fn halt(&mut self) {
+    pub fn halt(&self) {
         *self.exec_state.lock().unwrap() = ExecState::Halted;
+    }
+
+    pub fn step(&self) {
+        self.msg_pipe.send(DebugMsg::Step).expect("Failed to send step cmd");
     }
 
     pub fn exec_state(&self) -> ExecState {

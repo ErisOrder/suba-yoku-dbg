@@ -145,7 +145,7 @@ fn dll_init() {
 
         
         listener.register_cb('N' as u16, || {
-            let Some(ref mut dbg) = 
+            let Some(ref dbg) = 
                 *hooks::SQ_DEBUGGER.lock().unwrap() else { return };
 
             match dbg.exec_state() {
@@ -159,7 +159,13 @@ fn dll_init() {
                 },
             }
         });
-        
+
+        listener.register_cb('G' as u16, || {
+            let Some(ref dbg) = 
+                *hooks::SQ_DEBUGGER.lock().unwrap() else { return };
+
+            dbg.step();
+        });
 
         listener.listen();
     });
