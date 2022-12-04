@@ -220,7 +220,12 @@ gen_hook! {
         unsafe extern "stdcall" fn bind(func_: *const u8) {
             debug!(target: "bind_hook", "called stub, sqrat ptr: 0x{SQ_TAB_PTR:X}, sqvm ptr: {SQVM_PTR:X}");
 
-            let vm = UnsafeVm::from_handle(SQVM_PTR as _).into_safe();
+            let mut vm = UnsafeVm::from_handle(SQVM_PTR as _).into_safe();
+
+            vm.register_closure("TestClos", Box::new(|_vm| {
+                debug!("Called closure");
+                0
+            }));
 
             *SQ_DEBUGGER.lock().unwrap() = Some(dbg::SqDebugger::attach(vm));
 

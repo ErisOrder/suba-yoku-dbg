@@ -39,6 +39,9 @@ pub type SqDebugHook<'a> = dyn Fn(DebugEvent, Option<String>) + Send + 'a;
 /// C SQFunction type 
 pub type SQFn = unsafe extern "C" fn(HSQUIRRELVM) -> SQInteger;
 
+/// Safe abstraction for SQFn
+pub type SQFnClosure<'a> = dyn Fn(&mut FriendVm) -> SQInteger + Send + 'a; 
+
 /// Event that VM debug hook may receive
 #[derive(Clone, PartialEq, PartialOrd, Eq, Ord, Debug, Hash)]
 pub enum DebugEvent {
@@ -97,7 +100,8 @@ pub trait SqVmHandle {
 /// Will be closed on drop 
 pub struct SafeVm<'a> {
     handle: HSQUIRRELVM,
-    debug_hook: Option<Box<Box<SqDebugHook<'a>>>>
+    debug_hook: Option<Box<Box<SqDebugHook<'a>>>>,
+    native_closures: HashMap<String, Box<Box<SQFnClosure<'a>>>>
 }
 
 /// It`s not safe, but it`s needed
@@ -115,13 +119,16 @@ impl Drop for SafeVm<'_> {
     }
 }
 
-impl<'a> SafeVm<'a> {
+impl<'a, 'b> SafeVm<'a>
+where
+    'a: 'b
+{
     /// Creates a new instance of a squirrel VM that consists in a new execution stack.
     pub fn open(initial_stack_size: usize) -> Self {
         let handle = unsafe {
              sq_open(initial_stack_size as _)
         };
-        Self { handle, debug_hook: None  }
+        Self { handle, debug_hook: None, native_closures: HashMap::new() }
     }
 
     
@@ -130,10 +137,7 @@ impl<'a> SafeVm<'a> {
     /// In order to receive a 'per line' callback, is necessary 
     /// to compile the scripts with the line informations. 
     /// Without line informations activated, only the 'call/return' callbacks will be invoked.
-    pub fn set_debug_hook<'b>(&'b mut self, hook: Box<SqDebugHook<'a>>)
-    where 'a: 'b 
-    {
-        
+    pub fn set_debug_hook(&'b mut self, hook: Box<SqDebugHook<'a>>) {
         // Indirection to make fat pointer usable through FFI
         let hook_box = Box::new(hook); 
 
@@ -178,6 +182,51 @@ impl<'a> SafeVm<'a> {
         }
     }
     
+    pub fn register_closure(&'b mut self, name: &str, closure: Box<SQFnClosure<'a>>) {
+        let clos_box = Box::new(closure); 
+
+        #[allow(clippy::borrowed_box)]
+        unsafe extern "C" fn glue(hvm: HSQUIRRELVM) -> SQInteger {
+            let mut vm = UnsafeVm::from_handle(hvm).into_friend();
+
+            let top = vm.stack_len();
+            let closure_box: SqUserData = vm.get(top).unwrap();
+
+            let closure_box: usize = unsafe { std::ptr::read(closure_box.unwrap().as_ptr() as _) };
+
+            // Must be safe as long as wrapper bound with VM is alive
+            let closure: &Box<SQFnClosure> = unsafe {
+                &*(closure_box as *mut _) 
+            };
+
+            closure(&mut vm)
+        }
+
+        let raw = Box::leak(clos_box) as *mut _;
+
+        let boxed_box = unsafe { Box::from_raw(raw) };
+
+        let old = self.native_closures.insert(name.to_string(), boxed_box);
+
+        let data: Vec<_> = (raw as usize).to_ne_bytes().into();
+
+        self.push_root_table();
+        self.push(name).expect("failed to push closure name");
+        self.push(SqUserData::from(data)).expect("Failed to push closure box ptr");
+        
+        unsafe {
+            self.new_closure(glue, 1);
+        }
+            
+        if old.is_some() {
+            self.slot_set(-3).expect("Failed to set root table slot value");
+        } else {
+            self.new_slot(-3, false).expect("Failed to create slot in root table");
+        }
+        
+        self.pop(1);
+    }
+
 }
 
 /// Wrapper for manipulating foreign VMs
@@ -207,7 +256,7 @@ impl UnsafeVm {
     /// Transform into Safe VM.
     /// Safe Vm will be closed on drop
     pub fn into_safe(self) -> SafeVm<'static> {
-        SafeVm { handle: self.0, debug_hook: None }
+        SafeVm { handle: self.0, debug_hook: None, native_closures: HashMap::new() }
     }
 
     /// Transform into Friend VM.
@@ -388,6 +437,17 @@ pub trait SQVm: SqVmErrorHandling {
     fn new_slot(&mut self, idx: SQInteger, is_static: bool) -> Result<()> {
         sq_try! { self, unsafe { sq_newslot(self.handle(), idx, is_static as _) } }
             .context(format!("Failed to create slot for table at idx {idx}"))?;
+        Ok(())
+    }
+
+    /// Pops a key and a value from the stack and performs a set operation
+    /// on the object at position `idx` in the stack.
+    /// 
+    /// this call will invoke the delegation system like a normal assignment,
+    /// it only works on tables, arrays and userdata.
+    fn slot_set(&mut self, idx: SQInteger) -> Result<()> {
+        sq_try! { self, unsafe { sq_set(self.handle(), idx) } }
+            .context(format!("Failed to set slot value for table at idx {idx}"))?;
         Ok(())
     }
 
