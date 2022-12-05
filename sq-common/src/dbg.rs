@@ -13,6 +13,7 @@ pub enum ExecState {
 
 pub enum DebugMsg {
     Step,
+    DebugMessages(bool)
 }
 
 pub struct SqDebugger<'a>{
@@ -35,13 +36,17 @@ impl<'a> SqDebugger<'a>
         };
 
         let exec_state = dbg.exec_state.clone();
+        let mut debug_msg = true;
 
         dbg.vm.set_debug_hook(Box::new(move |e, src| {
-            debug!("{src:?}: {e:?}");
+            if debug_msg {
+                debug!("{src:?}: {e:?}");
+            }
             
             loop {
                 if let Ok(msg) = rx.try_recv() { match msg {
                     DebugMsg::Step => break,
+                    DebugMsg::DebugMessages(en) => debug_msg = en,
                 }}
 
                 if *exec_state.lock().unwrap() == ExecState::Running {
@@ -64,6 +69,11 @@ impl<'a> SqDebugger<'a>
 
     pub fn step(&self) {
         self.msg_pipe.send(DebugMsg::Step).expect("Failed to send step cmd");
+    }
+
+    pub fn enable_debug_messages(&self, en: bool) {
+        let msg = DebugMsg::DebugMessages(en);
+        self.msg_pipe.send(msg).expect("Failed to send debug messages cmd");
     }
 
     pub fn exec_state(&self) -> ExecState {

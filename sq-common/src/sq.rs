@@ -34,13 +34,13 @@ impl From<Vec<u8>> for SqUserData {
     }
 }
 
-pub type SqDebugHook<'a> = dyn Fn(DebugEvent, Option<String>) + Send + 'a;
+pub type SqDebugHook<'a> = dyn FnMut(DebugEvent, Option<String>) + Send + 'a;
 
 /// C SQFunction type 
 pub type SQFn = unsafe extern "C" fn(HSQUIRRELVM) -> SQInteger;
 
 /// Safe abstraction for SQFn
-pub type SQFnClosure<'a> = dyn Fn(&mut FriendVm) -> SQInteger + Send + 'a; 
+pub type SQFnClosure<'a> = dyn FnMut(&mut FriendVm) -> SQInteger + Send + 'a; 
 
 /// Event that VM debug hook may receive
 #[derive(Clone, PartialEq, PartialOrd, Eq, Ord, Debug, Hash)]
@@ -161,8 +161,8 @@ where
             let closure_box: usize = unsafe { std::ptr::read(closure_box.unwrap().as_ptr() as _) };
 
             // Must be safe as long as wrapper bound with VM is alive
-            let hook: &Box<SqDebugHook> = unsafe {
-                &*(closure_box as *mut _) 
+            let hook: &mut Box<SqDebugHook> = unsafe {
+                &mut *(closure_box as *mut _) 
             };
 
             hook(event, src_file);
@@ -195,8 +195,8 @@ where
             let closure_box: usize = unsafe { std::ptr::read(closure_box.unwrap().as_ptr() as _) };
 
             // Must be safe as long as wrapper bound with VM is alive
-            let closure: &Box<SQFnClosure> = unsafe {
-                &*(closure_box as *mut _) 
+            let closure: &mut Box<SQFnClosure> = unsafe {
+                &mut *(closure_box as *mut _) 
             };
 
             closure(&mut vm)

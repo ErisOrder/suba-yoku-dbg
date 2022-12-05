@@ -1,5 +1,4 @@
 use proc_macro::TokenStream;
-use sq::sq_set_mod_impl;
 
 mod sq;
 
@@ -7,16 +6,24 @@ mod sq;
 /// (`::rust_fn` and `::sq_fn`)
 #[proc_macro_attribute]
 pub fn sqfn(
-  args: TokenStream,
-  item: TokenStream,
+    args: TokenStream,
+    item: TokenStream,
 ) -> TokenStream {
-  sq::sqfn_impl(args, item)
+    sq::sqfn_impl(sq::SqFuncType::StaticFn(item, args))
 }
 
 /// Set sq_lib_path and sq_wrap_path
 #[proc_macro] 
 pub fn set_sqfn_paths(
-  args: TokenStream
+    args: TokenStream
 ) -> TokenStream {
-  sq_set_mod_impl(args)
+    sq::sq_set_mod_impl(args)
+}
+
+/// Generate boxed squirrel closure  
+#[proc_macro] 
+pub fn sq_closure(
+    item: TokenStream
+) -> TokenStream {
+    sq::sqfn_impl(sq::SqFuncType::Closure(item))
 }

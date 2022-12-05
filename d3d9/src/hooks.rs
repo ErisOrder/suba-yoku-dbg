@@ -5,7 +5,7 @@ use log::debug;
 use region::Protection;
 use anyhow::Result;
 use lazy_static::lazy_static;
-use util_proc_macro::sqfn;
+use util_proc_macro::{sqfn, sq_closure};
 
 use crate::{wrappers, sq_bind_method};
 use sq_common::*;
@@ -227,7 +227,14 @@ gen_hook! {
                 0
             }));
 
-            *SQ_DEBUGGER.lock().unwrap() = Some(dbg::SqDebugger::attach(vm));
+            vm.register_closure("TestAutoGen", sq_closure!(|a: SQInteger| {
+                debug!("Called autogen closure: {a}");
+            }));
+
+            let dbg = dbg::SqDebugger::attach(vm);
+            dbg.enable_debug_messages(false);
+            dbg.resume();
+            *SQ_DEBUGGER.lock().unwrap() = Some(dbg);
 
             let bind_fn: crate::util::BindSQFnFn = std::mem::transmute(func_); 
 
