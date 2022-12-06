@@ -1,7 +1,7 @@
 use anyhow::{bail, Context};
 use squirrel2_kaleido_rs::*;
 use util_proc_macro::sqfn;
-use std::{ptr::{addr_of_mut, addr_of}, cmp::Ordering, collections::HashMap, hash::Hash};
+use std::{ptr::addr_of_mut, cmp::Ordering, collections::HashMap, hash::Hash};
 use anyhow::{
     Result,
     anyhow
@@ -260,6 +260,7 @@ impl UnsafeVm {
     }
 
     /// Transform into Friend VM.
+    /// ## Safety
     /// Friend Vm __cannot__ be closed
     pub unsafe fn into_friend(self) -> FriendVm {
         FriendVm(self.0)
@@ -478,7 +479,10 @@ pub trait SQVm: SqVmErrorHandling {
     
 }
 
+
+
 /// Unsafe object manipulation
+#[allow(clippy::missing_safety_doc)]
 pub trait SqVmApi: SqVmErrorHandling {
         /// Pushes a null value into the stack
         #[inline]

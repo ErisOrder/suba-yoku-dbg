@@ -227,8 +227,13 @@ gen_hook! {
                 0
             }));
 
-            vm.register_closure("TestAutoGen", sq_closure!(|a: SQInteger| {
-                debug!("Called autogen closure: {a}");
+            let mut xx = 0;
+
+            vm.register_closure("TestAutoGen", sq_closure!(
+            #[(print_args = true)] 
+            move |a: SQInteger| {
+                xx += a;
+                debug!("Called autogen closure: {a} {}", xx);
             }));
 
             let dbg = dbg::SqDebugger::attach(vm);

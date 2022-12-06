@@ -1,7 +1,11 @@
 use proc_macro2::Span;
 use quote::quote;
 use darling::{FromMeta, ToTokens};
-use syn::{AttributeArgs, ItemFn, parse_macro_input, Ident, Visibility, FnArg, Pat, Path, ExprClosure, Type, Attribute, NestedMeta, parse::{Parse, ParseStream}, Token, bracketed, parenthesized};
+use syn::{
+    AttributeArgs, ItemFn, parse_macro_input, Ident, Visibility, FnArg, Pat, Path,
+    ExprClosure, Type, NestedMeta, parse::{Parse, ParseStream}, Token,
+    bracketed, parenthesized
+};
 
 #[derive(Debug, FromMeta, Default)]
 pub struct SQFnMacroArgs {
@@ -74,14 +78,15 @@ impl SqClosureInput {
         }
 
         let brack_list;
-        let list;
+        let arg_list;
         bracketed!(brack_list in input);
-        parenthesized!(list in brack_list);
+        parenthesized!(arg_list in brack_list);
 
-        let mut list = vec![list.parse()?];
+        // Parse first
+        let mut list = vec![arg_list.parse()?];
 
         while let (Ok(_), Ok(arg)) = (
-            input.parse::<Token![,]>(), input.parse::<NestedMeta>()
+            arg_list.parse::<Token![,]>(), arg_list.parse::<NestedMeta>()
         ) {
             list.push(arg);
         }
@@ -96,9 +101,8 @@ impl Parse for SqClosureInput {
             Ok(a) => a,
             Err(e) => return Err(e),
         };
-
+        
         let closure: ExprClosure = input.parse()?;
-
         Ok(Self {
             args_list,
             closure,
@@ -123,7 +127,6 @@ pub fn sqfn_impl(
         },
         SqFuncType::Closure(input) => {
             let parsed = parse_macro_input!(input as SqClosureInput);
-            
             
             let args = if let Some(args_list) = parsed.args_list {
                 match SQFnMacroArgs::from_list(&args_list) {
@@ -210,13 +213,14 @@ pub fn sqfn_impl(
             let ident = Ident::new(&s, Span::call_site());
             let arg = quote!{ mut #ident: Vec<#sq_wrapper_mod::DynSqVar> }.into();
 
+            let arg = parse_macro_input!( arg as FnArg );
+
             match &mut item {
-                ItemSqFn::ItemFn(item) => item.sig.inputs.push(
-                    parse_macro_input!( arg as FnArg )
-                ),
-                ItemSqFn::Closure(item) => item.inputs.push(
-                    parse_macro_input!( arg as Pat )
-                ),
+                ItemSqFn::ItemFn(item) => item.sig.inputs.push(arg),
+                ItemSqFn::Closure(item) => {
+                    let FnArg::Typed(a) = arg else { unreachable!() };
+                    item.inputs.push(Pat::Type(a));
+                }
             };
 
             debug_args_fmt += &format!("{s} = {{:?}}; ");
@@ -268,12 +272,6 @@ pub fn sqfn_impl(
     };
 
     let sq_fn_body_start = quote! {
-        // pop unused userdata with method
-        // TODO: Maybe just write this as last fn arg
-        if #sqrat_method {
-            #vm_ident.pop(1); 
-        }
-
         let top = #vm_ident.stack_len();
         let norm_argc = #norm_argc as i32;
 
@@ -281,7 +279,7 @@ pub fn sqfn_impl(
         // 1: this TODO: Check if all functions has class or table instance
         // 2: arg0
         // 3: arg1 <-- top
-        // ?: popped userdata with method ptr 
+        // ?: popped userdata with method ptr
         // technically, all functions has varargs by default
 
         #(  // normal (rust) args indexes: 2..2+norm_argc
@@ -351,6 +349,12 @@ pub fn sqfn_impl(
                     // Cannot be closed if passed to method
                     let mut #vm_ident = UnsafeVm::from_handle(hvm).into_friend();
 
+                    // pop unused userdata with method
+                    if #sqrat_method {
+
+                        #vm_ident.pop(1); 
+                    }
+
                     #sq_fn_body_start
     
                     let ret = Self::rust_fn(#( #normal_arg_idents, )* #( #varargs,)* #(&mut #vm_option)* );
@@ -359,13 +363,18 @@ pub fn sqfn_impl(
                 }
             }
         },
-        ItemSqFn::Closure(item_clos) => {
+        ItemSqFn::Closure(mut item_clos) => {
+            // move `move` keyword to outer closure  
             let move_kw = item_clos.capture;
+            item_clos.capture = None;
             quote! {
                 Box::new(#move_kw |#vm_ident: &mut #sq_wrapper_mod::FriendVm| -> #sq_lib_mod::SQInteger {
                     #imports
 
                     #sq_fn_body_start
+
+                    // Pop userdata with outer closure ptr
+                    #vm_ident.pop(1); 
 
                     let mut inner = #item_clos;
 
