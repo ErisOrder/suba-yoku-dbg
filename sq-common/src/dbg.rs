@@ -4,6 +4,7 @@ use crate::sq::*;
 //use squirrel2_kaleido_rs::*;
 
 use log::debug;
+use squirrel2_kaleido_rs::SQInteger;
 
 #[derive(Copy, Clone, PartialEq, PartialOrd, Eq, Ord, Debug, Hash)]
 pub enum ExecState {
@@ -13,7 +14,8 @@ pub enum ExecState {
 
 pub enum DebugMsg {
     Step,
-    DebugMessages(bool)
+    DebugMessages(bool),
+    PrintCallStack,
 }
 
 pub struct SqDebugger<'a>{
@@ -38,7 +40,7 @@ impl<'a> SqDebugger<'a>
         let exec_state = dbg.exec_state.clone();
         let mut debug_msg = true;
 
-        dbg.vm.set_debug_hook(Box::new(move |e, src| {
+        dbg.vm.set_debug_hook(Box::new(move |e, src, vm| {
             if debug_msg {
                 debug!("{src:?}: {e:?}");
             }
@@ -47,6 +49,14 @@ impl<'a> SqDebugger<'a>
                 if let Ok(msg) = rx.try_recv() { match msg {
                     DebugMsg::Step => break,
                     DebugMsg::DebugMessages(en) => debug_msg = en,
+                    DebugMsg::PrintCallStack => {
+                        debug!("stack:");
+                        for lvl in (1..vm.stack_len()).rev() {
+                            if let Ok(info) = vm.get_function_info(lvl) {
+                                debug!("    {lvl:04}: {info:?}");
+                            }
+                        }
+                    },
                 }}
 
                 if *exec_state.lock().unwrap() == ExecState::Running {
@@ -69,6 +79,11 @@ impl<'a> SqDebugger<'a>
 
     pub fn step(&self) {
         self.msg_pipe.send(DebugMsg::Step).expect("Failed to send step cmd");
+    }
+
+    pub fn print_stack(&self) {
+        self.msg_pipe.send(DebugMsg::PrintCallStack)
+            .expect("Failed to send print stack cmd");
     }
 
     pub fn enable_debug_messages(&self, en: bool) {

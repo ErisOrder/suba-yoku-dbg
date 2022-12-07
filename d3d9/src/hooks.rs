@@ -237,8 +237,8 @@ gen_hook! {
             }));
 
             let dbg = dbg::SqDebugger::attach(vm);
-            dbg.enable_debug_messages(false);
-            dbg.resume();
+            //dbg.enable_debug_messages(false);
+            //dbg.resume();
             *SQ_DEBUGGER.lock().unwrap() = Some(dbg);
 
             let bind_fn: crate::util::BindSQFnFn = std::mem::transmute(func_); 

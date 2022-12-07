@@ -7,6 +7,15 @@ use anyhow::{
     anyhow
 };
 
+/// Copy foreign C str to owned String
+pub unsafe  fn cstr_to_string(ptr: *const i8) -> String {
+    let len = libc::strlen(ptr as _);
+    let mut v = Vec::with_capacity(len);
+    std::ptr::copy(ptr, v.as_mut_ptr() as _, len);
+    v.set_len(len);
+    String::from_utf8_unchecked(v)
+}
+
 macro_rules! sq_try {
     ($vm:expr, $e:expr) => {
         {
@@ -34,7 +43,23 @@ impl From<Vec<u8>> for SqUserData {
     }
 }
 
-pub type SqDebugHook<'a> = dyn FnMut(DebugEvent, Option<String>) + Send + 'a;
+/// Safe SQFuntionProto structure
+#[derive(Clone, PartialEq, PartialOrd, Eq, Ord, Debug, Hash)]
+pub struct SqFunctionInfo {
+    /// Basically a pointer to function
+    pub func_id: *mut libc::c_void,
+    pub name: Option<String>,
+    pub src_file: Option<String>,
+}
+
+#[derive(Clone, PartialEq, PartialOrd, Eq, Ord, Debug, Hash)]
+pub struct SqStackInfo {
+    pub funcname: Option<String>,
+    pub src_file: Option<String>,
+    pub line: Option<SQInteger>, 
+}
+
+pub type SqDebugHook<'a> = dyn FnMut(DebugEvent, Option<String>, &mut FriendVm) + Send + 'a;
 
 /// C SQFunction type 
 pub type SQFn = unsafe extern "C" fn(HSQUIRRELVM) -> SQInteger;
@@ -142,7 +167,7 @@ where
         let hook_box = Box::new(hook); 
 
         #[allow(clippy::borrowed_box)]
-        #[sqfn(sq_lib_path = "squirrel2_kaleido_rs", sq_wrap_path = "self")]
+        #[sqfn(sq_lib_path = "squirrel2_kaleido_rs", sq_wrap_path = "self", vm_var = "vm")]
         fn DebugHook(
             event_type: SQInteger,
             src_file: Option<String>,
@@ -165,7 +190,7 @@ where
                 &mut *(closure_box as *mut _) 
             };
 
-            hook(event, src_file);
+            hook(event, src_file, vm);
         }
 
         let raw = Box::leak(hook_box) as *mut _;
@@ -477,6 +502,23 @@ pub trait SQVm: SqVmErrorHandling {
         unsafe { sq_pushroottable(self.handle()) }
     } 
     
+    fn get_function_info(&mut self, level: SQInteger) -> Result<SqFunctionInfo> {
+        let mut func_info = unsafe { std::mem::zeroed() };
+
+        sq_try! { self,
+            unsafe { sq_getfunctioninfo(self.handle(), level, addr_of_mut!(func_info)) }
+        }?;
+
+        let name = unsafe { cstr_to_string(func_info.name) };
+        let src = unsafe { cstr_to_string(func_info.source) };
+
+        Ok(SqFunctionInfo {
+            func_id: func_info.funcid,
+            name: if name != "unknown" { Some(name) } else { None },
+            src_file: if src != "unknown" { Some(src) } else { None },
+        })
+    }
+
 }
 
 
@@ -684,11 +726,7 @@ impl<T: SqVmApi> SqGet<String> for T {
         let ptr = unsafe { self.get_string(idx) }?;
 
         unsafe {
-            let len = libc::strlen(ptr as _);
-            let mut v = Vec::with_capacity(len);
-            std::ptr::copy(ptr, v.as_mut_ptr(), len);
-            v.set_len(len);
-            Ok(String::from_utf8_unchecked(v)) 
+            Ok(cstr_to_string(ptr as _))
         }
     }
 }

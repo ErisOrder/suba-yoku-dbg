@@ -167,6 +167,13 @@ fn dll_init() {
             dbg.step();
         });
 
+        listener.register_cb('S' as u16, || {
+            let Some(ref dbg) = 
+                *hooks::SQ_DEBUGGER.lock().unwrap() else { return };
+
+            dbg.print_stack();
+        });
+
         listener.listen();
     });
 
