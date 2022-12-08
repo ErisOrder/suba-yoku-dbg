@@ -8,6 +8,9 @@ use anyhow::{
 };
 
 /// Copy foreign C str to owned String
+///
+/// ## Safety
+/// Safe as long as ptr is to normal null-terminated string
 pub unsafe  fn cstr_to_string(ptr: *const i8) -> String {
     let len = libc::strlen(ptr as _);
     let mut v = Vec::with_capacity(len);
@@ -25,6 +28,14 @@ macro_rules! sq_try {
             } else { Ok(out) }
         }
     };
+    ($vm:expr, nothrow $e:expr) => {
+        {
+            let out = $e;
+            if out == -1 {
+                Err(anyhow!("unknown error"))
+            } else { Ok(out) }
+        }
+    }
 }
 
 /// Newtype wrapper for getting and pushing userdata
@@ -57,6 +68,16 @@ pub struct SqStackInfo {
     pub funcname: Option<String>,
     pub src_file: Option<String>,
     pub line: Option<SQInteger>, 
+}
+
+impl std::fmt::Display for SqStackInfo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{src}:{func}:{ln}",
+            src = if let Some(src_f) = &self.src_file { src_f } else { "??" },
+            func = if let Some(funcname) = &self.funcname { funcname } else { "??" },
+            ln = if let Some(line) = self.line { line.to_string() } else { "??".into() }
+        )
+    }
 }
 
 pub type SqDebugHook<'a> = dyn FnMut(DebugEvent, Option<String>, &mut FriendVm) + Send + 'a;
@@ -502,6 +523,12 @@ pub trait SQVm: SqVmErrorHandling {
         unsafe { sq_pushroottable(self.handle()) }
     } 
     
+    /// The member 'func_id' of the returned SqFunctionInfo structure is a
+    /// unique identifier of the function; this can be useful to identify
+    /// a specific piece of squirrel code in an application like for instance a profiler.
+    /// this method will fail if the closure in the stack is a native C closure.
+    /// 
+    /// NOTE: Feels like legacy version of `get_stack_info`
     fn get_function_info(&mut self, level: SQInteger) -> Result<SqFunctionInfo> {
         let mut func_info = unsafe { std::mem::zeroed() };
 
@@ -516,6 +543,24 @@ pub trait SQVm: SqVmErrorHandling {
             func_id: func_info.funcid,
             name: if name != "unknown" { Some(name) } else { None },
             src_file: if src != "unknown" { Some(src) } else { None },
+        })
+    }
+
+    /// Retrieve the call stack informations of a certain `level` in the calls stack
+    fn get_stack_info(&mut self, level: SQInteger) -> Result<SqStackInfo> {
+        let mut stack_info = unsafe { std::mem::zeroed() };
+
+        sq_try! { self,
+            nothrow unsafe { sq_stackinfos(self.handle(), level, addr_of_mut!(stack_info)) }
+        }?;
+
+        let name = unsafe { cstr_to_string(stack_info.funcname) };
+        let src = unsafe { cstr_to_string(stack_info.source) };
+
+        Ok(SqStackInfo { 
+            funcname: if name != "unknown" { Some(name) } else { None },
+            src_file: if src != "NATIVE" { Some(src) } else { None },
+            line: if stack_info.line > 0 { Some(stack_info.line) } else { None }
         })
     }
 

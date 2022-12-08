@@ -51,10 +51,10 @@ impl<'a> SqDebugger<'a>
                     DebugMsg::DebugMessages(en) => debug_msg = en,
                     DebugMsg::PrintCallStack => {
                         debug!("stack:");
-                        for lvl in (1..vm.stack_len()).rev() {
-                            if let Ok(info) = vm.get_function_info(lvl) {
-                                debug!("    {lvl:04}: {info:?}");
-                            }
+                        let mut lvl = 1;
+                        while let Ok(info) = vm.get_stack_info(lvl) {
+                            debug!("{lvl:04}: {info}");
+                            lvl += 1;
                         }
                     },
                 }}
@@ -81,7 +81,7 @@ impl<'a> SqDebugger<'a>
         self.msg_pipe.send(DebugMsg::Step).expect("Failed to send step cmd");
     }
 
-    pub fn print_stack(&self) {
+    pub fn print_call_stack(&self) {
         self.msg_pipe.send(DebugMsg::PrintCallStack)
             .expect("Failed to send print stack cmd");
     }

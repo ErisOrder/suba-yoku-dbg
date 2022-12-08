@@ -171,7 +171,7 @@ fn dll_init() {
             let Some(ref dbg) = 
                 *hooks::SQ_DEBUGGER.lock().unwrap() else { return };
 
-            dbg.print_stack();
+            dbg.print_call_stack();
         });
 
         listener.listen();
