@@ -315,6 +315,7 @@ fn TestDyn(d: DynSqVar) -> DynSqVar {
         DynSqVar::Bool(b) => format!("Bool {b}"),
         DynSqVar::Table(t) => format!("Table {t:?}"),
         DynSqVar::UserData(u) => format!("UserData {u:?}"),
+        DynSqVar::Unsupported(other) => format!("{other:?}")
     };
     debug!("received {s}");
     DynSqVar::Array(vec![

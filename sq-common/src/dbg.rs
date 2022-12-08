@@ -4,7 +4,6 @@ use crate::sq::*;
 //use squirrel2_kaleido_rs::*;
 
 use log::debug;
-use squirrel2_kaleido_rs::SQInteger;
 
 #[derive(Copy, Clone, PartialEq, PartialOrd, Eq, Ord, Debug, Hash)]
 pub enum ExecState {
@@ -54,6 +53,13 @@ impl<'a> SqDebugger<'a>
                         let mut lvl = 1;
                         while let Ok(info) = vm.get_stack_info(lvl) {
                             debug!("{lvl:04}: {info}");
+
+                            let mut idx = 0;
+                            while let Ok((name, val)) = vm.get_local(lvl, idx) {
+                                debug!("    {idx:02}: {name}: {val:#?}");
+                                idx += 1;
+                            }
+                            
                             lvl += 1;
                         }
                     },

@@ -112,8 +112,15 @@ pub enum SqType {
     Bool,
     UserData,
 
-    /// Stub for unknown or unsupported types
-    Unknown(SQInteger)
+    Closure,
+    NativeClosure,
+    Generator,
+    UserPointer,
+    Thread,
+    FuncProto,
+    Class,
+    Instance,
+    WeakRef,
 }
 
 #[derive(Copy, Clone, PartialEq, PartialOrd, Eq, Ord, Debug, Hash)]
@@ -132,7 +139,18 @@ impl From<SQObjectType> for SqType {
             tagSQObjectType_OT_BOOL => SqType::Bool,
             tagSQObjectType_OT_TABLE => SqType::Table,
             tagSQObjectType_OT_USERDATA => SqType::UserData,
-            unk => SqType::Unknown(unk)
+
+            tagSQObjectType_OT_CLOSURE => SqType::Closure,
+            tagSQObjectType_OT_NATIVECLOSURE => SqType::NativeClosure,
+            tagSQObjectType_OT_GENERATOR => SqType::Generator,
+            tagSQObjectType_OT_USERPOINTER => SqType::UserPointer,
+            tagSQObjectType_OT_THREAD => SqType::Thread,
+            tagSQObjectType_OT_FUNCPROTO => SqType::FuncProto,
+            tagSQObjectType_OT_CLASS => SqType::Class,
+            tagSQObjectType_OT_INSTANCE => SqType::Instance,
+            tagSQObjectType_OT_WEAKREF => SqType::WeakRef,
+
+            _ => unreachable!()
         }
     }
 }
@@ -522,6 +540,12 @@ pub trait SQVm: SqVmErrorHandling {
     fn push_root_table(&mut self) {
         unsafe { sq_pushroottable(self.handle()) }
     } 
+}
+
+/// Basic debug api methods
+pub trait SqVmDebugBasic: SqVmApi + SqGet<DynSqVar>
+where Self: Sized
+{
     
     /// The member 'func_id' of the returned SqFunctionInfo structure is a
     /// unique identifier of the function; this can be useful to identify
@@ -547,11 +571,11 @@ pub trait SQVm: SqVmErrorHandling {
     }
 
     /// Retrieve the call stack informations of a certain `level` in the calls stack
-    fn get_stack_info(&mut self, level: SQInteger) -> Result<SqStackInfo> {
+    fn get_stack_info(&mut self, level: SQUnsignedInteger) -> Result<SqStackInfo> {
         let mut stack_info = unsafe { std::mem::zeroed() };
 
         sq_try! { self,
-            nothrow unsafe { sq_stackinfos(self.handle(), level, addr_of_mut!(stack_info)) }
+            nothrow unsafe { sq_stackinfos(self.handle(), level as _, addr_of_mut!(stack_info)) }
         }?;
 
         let name = unsafe { cstr_to_string(stack_info.funcname) };
@@ -564,9 +588,23 @@ pub trait SQVm: SqVmErrorHandling {
         })
     }
 
+    /// Returns the name and value of a local variable given
+    /// stackframe and sequence in the stack.
+    /// 
+    /// Free variables are treated as local variables, and will be returned
+    /// as they would be at the base of the stack, just before the real local variable
+    fn get_local(&mut self, level: SQUnsignedInteger, idx: SQUnsignedInteger) -> Result<(String, DynSqVar)> {
+        let ptr = unsafe { sq_getlocal(self.handle(), level, idx) };
+        if ptr != 0 as _ {
+            let name = unsafe { cstr_to_string(ptr) };
+            let val = self.get(-1)?;
+            self.pop(1);
+            Ok((name, val))
+        } else {
+            bail!("Failed to get name of local at lvl: {level} idx: {idx}");
+        }
+    }
 }
-
-
 
 /// Unsafe object manipulation
 #[allow(clippy::missing_safety_doc)]
@@ -700,6 +738,7 @@ impl SqVmErrorHandling for FriendVm {}
 
 impl<T: SqVmErrorHandling> SQVm for T {}
 impl<T: SqVmErrorHandling> SqVmApi for T {}
+impl<T: SqGet<DynSqVar> + SqVmApi> SqVmDebugBasic for T {}
 
 pub trait SqPush<T> {
     /// Push a value to the vm stack
@@ -789,8 +828,6 @@ impl<T: SqVmApi> SqGet<SQNull> for T {
     fn get(&mut self, idx: SQInteger) -> Result<SQNull> {
         match self.get_type(idx) {
             SqType::Null => Ok(SQNull),
-            SqType::Unknown(id) => 
-                bail!("Failed to get null at idx {idx}: unknown type 0x{id:x}"),
             other => 
                 bail!("Failed to get null at idx {idx}: object type is {other:?}"),
         }
@@ -975,6 +1012,7 @@ pub enum DynSqVar {
     //UserPointer(???),
     //Class(SQClass),
     //Weakref(???)
+    Unsupported(SqType)
 } 
 
 impl PartialEq for DynSqVar {
@@ -1019,6 +1057,7 @@ impl Hash for DynSqVar {
             DynSqVar::Array(a) => a.hash(state),
             DynSqVar::UserData(u) => u.hash(state),
             DynSqVar::Null => core::mem::discriminant(self).hash(state),
+            DynSqVar::Unsupported(_) => unimplemented!()
         }
 
     }
@@ -1040,6 +1079,7 @@ where
             DynSqVar::Bool(b) => self.push(b),
             DynSqVar::Table(t) => self.push(t),
             DynSqVar::UserData(u) => self.push(u),
+            DynSqVar::Unsupported(_) => unimplemented!(),
         }
     }
 }
@@ -1060,7 +1100,7 @@ where
             SqType::Float => Ok(DynSqVar::Float(self.get(idx)?)),
             SqType::Bool => Ok(DynSqVar::Bool(self.get(idx)?)),
             SqType::UserData => Ok(DynSqVar::UserData(self.get(idx)?)),
-            SqType::Unknown(t) => bail!("Unknown or unsupported type: 0x{t:X}"),
+            other => Ok(DynSqVar::Unsupported(other)),
         }
     }
 }
