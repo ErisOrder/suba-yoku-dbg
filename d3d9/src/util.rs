@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use keyboard_query::{DeviceQuery, DeviceState};
 
 pub struct KeyListener {
@@ -26,6 +28,7 @@ impl KeyListener {
                 }
             }
             prev_keys = keys;
+            std::thread::sleep(Duration::from_millis(15));
         }
     }
 }

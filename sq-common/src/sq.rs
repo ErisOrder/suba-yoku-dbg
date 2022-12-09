@@ -991,10 +991,9 @@ where
     VM: SqGet<T> + SqVmApi
 {
     fn get(&mut self, idx: SQInteger) -> Result<Option<T>> {
-        if SqGet::<SQNull>::get(self, idx).is_ok() {
-            Ok(None)
-        } else {
-            Ok(Some(SqGet::<T>::get(self, idx)?))
+        match self.get_type(idx) {
+            SqType::Null => Ok(None),
+            _ => Ok(Some(SqGet::<T>::get(self, idx)?))
         }
     }
 }

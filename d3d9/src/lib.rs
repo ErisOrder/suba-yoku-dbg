@@ -85,10 +85,6 @@ fn dll_init() {
             .expect("failed to install hook");
         debug!("printf hook installed");
 
-        hooks::hook_text()
-            .expect("failed to install hook");
-        debug!("text hook installed");
-
         hooks::hook_bind()
             .expect("failed to install hook");
         debug!("bind hook installed");
@@ -103,22 +99,6 @@ fn dll_init() {
 
         let mut listener = util::KeyListener::new();
 
-        listener.register_cb('T' as u16, || {
-            if let Ok(mut b) = hooks::TEXT_HOOK_ACTIVE.lock() {
-                *b = !*b;
-                if *b { debug!("text (strcpy?) hook active"); } 
-                else { debug!("text (strcpy?) hook disabled"); }
-            }
-        });
-
-        listener.register_cb('H' as u16, || {
-            if let Ok(mut b) = hooks::PRINTF_HOOK_ACTIVE.lock() {
-                *b = !*b;
-                if *b { debug!("printf hook active"); } 
-                else { debug!("printf hook disabled"); }
-            }
-        });
-
         listener.register_cb('B' as u16, || {
             if let Ok(mut b) = hooks::BREAKPOINT_ACTIVE.lock() {
                 *b = !*b;
@@ -126,23 +106,6 @@ fn dll_init() {
                 else { debug!("breakpoint disarmed"); }
             }
         });
-
-        listener.register_cb('C' as u16, || {
-            let mut handle = wrappers::ThreadHandle::open(
-                unsafe { hooks::VM_THREAD_ID } as _
-            ).unwrap();
-            handle.suspend();
-            debug!("Suspended VM thread");
-        });
-
-        listener.register_cb('V' as u16, || {
-            let mut handle = wrappers::ThreadHandle::open(
-                unsafe { hooks::VM_THREAD_ID } as _
-            ).unwrap();
-            handle.resume();
-            debug!("Resumed VM thread");
-        });
-
         
         listener.register_cb('N' as u16, || {
             let Some(ref dbg) = 

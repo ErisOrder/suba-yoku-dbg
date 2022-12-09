@@ -17,9 +17,6 @@ const CALL_SIZE: usize = 5;
 const SQ_PRINTF_OFFSET: usize = 0x7AF0E;
 const SQ_HOOK_SIZE: usize = 6;
 
-const TEXT_HOOK_OFFSET: usize = 0xF3324;
-const TEXT_HOOK_SIZE: usize = 5;
-
 const REG_FN_HOOK_OFFSET: usize = 0x9657B;
 const REG_FN_HOOK_SIZE: usize = 5;
 
@@ -41,7 +38,6 @@ lazy_static! {
 
 pub static SQ_DEBUGGER: Mutex<Option<dbg::SqDebugger>> = Mutex::new(None); 
 
-pub static TEXT_HOOK_ACTIVE: Mutex<bool> = Mutex::new(false);
 pub static PRINTF_HOOK_ACTIVE: Mutex<bool> = Mutex::new(true);
 pub static BREAKPOINT_ACTIVE: Mutex<bool> = Mutex::new(true);
 
@@ -162,39 +158,6 @@ gen_hook! {
 }
 
 gen_hook! {
-    hook_text, TEXT_HOOK_OFFSET, TEXT_HOOK_SIZE, 0x200,
-    prolog {
-        ; add eax, DWORD [ebp + 0x30]
-        // stack manipulation
-        ; pop  ebx // ret addr temp
-        ; pop  edi // 1st original pop
-        ; pop  esi // 2nd original pop
-        ; push ebx // restore ret aadr
-    }
-    body {        
-        ; push eax
-        ; mov edx, DWORD _print as _
-        ; call edx   
-    }
-    inner {
-        unsafe extern "stdcall" fn _print(s: *mut u8) {
-            static mut PREV: Option<String> = None;
-            if matches!(TEXT_HOOK_ACTIVE.lock(), Ok(b) if *b) {
-                let len = libc::strlen(s as *const std::ffi::c_char);
-                let sl = std::slice::from_raw_parts(s, len);
-                let s = String::from_utf8_lossy(sl);
-                
-                // dedup
-                if !matches!(&PREV, Some(prev_s) if prev_s.as_str() == s)  {
-                    debug!(target: "text_hook", "{s}");
-                    PREV = Some(s.to_string());
-                } 
-            }
-        }
-    }
-}
-
-gen_hook! {
     // need to call 
     hook_bind, REG_FN_HOOK_OFFSET, REG_FN_HOOK_SIZE, 0x200,
     prolog {
@@ -237,7 +200,7 @@ gen_hook! {
             }));
 
             let dbg = dbg::SqDebugger::attach(vm);
-            //dbg.enable_debug_messages(false);
+            dbg.enable_debug_messages(false);
             //dbg.resume();
             *SQ_DEBUGGER.lock().unwrap() = Some(dbg);
 
