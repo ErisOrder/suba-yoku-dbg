@@ -8,7 +8,7 @@ use winapi::{um::{
     winbase,
     wingdi,
     psapi,
-    winnt::HANDLE, processthreadsapi as ptapi, 
+    winnt::HANDLE, processthreadsapi as ptapi,  
 }, shared::minwindef::{FALSE, HMODULE, DWORD}};
 use anyhow::Result;
 
@@ -38,10 +38,11 @@ macro_rules! handle_or_err {
     };
 }
 
+/// Allocate console and redirect stdout and stdin to it
 pub fn alloc_console() {
     unsafe {
         consoleapi::AllocConsole();
-
+        
         // FIXME: Research on how to make this more clear
         let font = utf16str!("GulimChe");
         let mut fontname = [0u16; 32];

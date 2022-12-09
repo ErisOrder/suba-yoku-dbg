@@ -39,7 +39,6 @@ lazy_static! {
 pub static SQ_DEBUGGER: Mutex<Option<dbg::SqDebugger>> = Mutex::new(None); 
 
 pub static PRINTF_HOOK_ACTIVE: Mutex<bool> = Mutex::new(true);
-pub static BREAKPOINT_ACTIVE: Mutex<bool> = Mutex::new(true);
 
 pub fn fixup_addr(offset: usize) -> usize {
     *BASE_ADDR + offset + BASE_OFFSET
@@ -199,6 +198,17 @@ gen_hook! {
                 debug!("Called autogen closure: {a} {}", xx);
             }));
 
+            vm.register_closure("Breakpoint", sq_closure!(
+                || {
+                    let Some(ref mut dbg) = *SQ_DEBUGGER.lock().unwrap()
+                    else { return };
+
+                    println!("Reached breakpoint");
+
+                    dbg.halt();
+                }
+            ));
+
             let dbg = dbg::SqDebugger::attach(vm);
             dbg.enable_debug_messages(false);
             //dbg.resume();
@@ -217,7 +227,6 @@ gen_hook! {
             sq_bind_method!(bind_fn, SQ_TAB_PTR, TestTable);
             sq_bind_method!(bind_fn, SQ_TAB_PTR, TestUserData);
             sq_bind_method!(bind_fn, SQ_TAB_PTR, TestCreateUserData);
-            sq_bind_method!(bind_fn, SQ_TAB_PTR, SpinLockBreakpoint);
             sq_bind_method!(bind_fn, SQ_TAB_PTR, TestOption);
 
         }
@@ -321,19 +330,6 @@ fn TestCreateUserData() -> SqUserData {
 fn TestUserData(inp: SqUserData) -> SqUserData {
     debug!("Received userdata: {inp:?}");
     inp
-}
-
-/// Halts execution to the point of breakpoint disarming
-#[sqfn(sqrat_method = true)]
-fn SpinLockBreakpoint() {
-    debug!("Breakpoint");
-    loop {
-        let mut bp = crate::hooks::BREAKPOINT_ACTIVE.lock().unwrap();
-        if !*bp {
-            *bp = true;
-            break;
-        }
-    }
 }
 
 #[sqfn(sqrat_method = true)]

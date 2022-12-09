@@ -2,6 +2,8 @@
 #![feature(abi_thiscall)]
 #![feature(macro_metavar_expr)]
 
+use std::time::Duration;
+
 use sq_common::dbg;
 use log::debug;
 use winapi::shared::minwindef::{BOOL, DWORD, HINSTANCE, LPVOID, UINT, TRUE};
@@ -75,10 +77,20 @@ fn dll_init() {
         wrappers::simple_message_box("Panic", &msg);
     }));
 
+    wrappers::alloc_console();
+
+    ctrlc::set_handler(move || {
+        let Some(ref dbg) = *hooks::SQ_DEBUGGER.lock().unwrap()
+        else { return };
+
+        if dbg.exec_state() == dbg::ExecState::Running {
+            dbg.halt();
+            println!("Execution halted");
+        }
+    }).expect("failed to set ctrl+c handler");
+
     std::env::set_var("RUST_LOG", "debug");
     pretty_env_logger::init();
-
-    wrappers::alloc_console();
 
     unsafe {
         hooks::hook_sq_printf()
@@ -95,49 +107,27 @@ fn dll_init() {
     }
 
     std::thread::spawn(|| {
-        debug!("Spawning key listener");
+        let mut front = util::DebuggerFrontend::new();
 
-        let mut listener = util::KeyListener::new();
+        loop {
+            std::thread::sleep(Duration::from_millis(20));
+    
+            let Some(ref mut dbg) = *hooks::SQ_DEBUGGER.lock().unwrap()
+            else { continue };
+    
+            if let dbg::ExecState::Halted = dbg.exec_state() {
+                let mut arg_str =  String::new();
+                std::io::stdin().read_line(&mut arg_str).unwrap();
+                
+                if !arg_str.trim().is_empty() {
+                    front.parse_args(&arg_str);
+                }
 
-        listener.register_cb('B' as u16, || {
-            if let Ok(mut b) = hooks::BREAKPOINT_ACTIVE.lock() {
-                *b = !*b;
-                if *b { debug!("breakpoint armed"); } 
-                else { debug!("breakpoint disarmed"); }
+                front.do_actions(dbg);
             }
-        });
-        
-        listener.register_cb('N' as u16, || {
-            let Some(ref dbg) = 
-                *hooks::SQ_DEBUGGER.lock().unwrap() else { return };
-
-            match dbg.exec_state() {
-                dbg::ExecState::Running => {
-                    dbg.halt();
-                    debug!(target: "debugger", "Execution halted");
-                },
-                dbg::ExecState::Halted => {
-                    dbg.resume();
-                    debug!(target: "debugger", "Execution resumed");
-                },
-            }
-        });
-
-        listener.register_cb('G' as u16, || {
-            let Some(ref dbg) = 
-                *hooks::SQ_DEBUGGER.lock().unwrap() else { return };
-
-            dbg.step();
-        });
-
-        listener.register_cb('S' as u16, || {
-            let Some(ref dbg) = 
-                *hooks::SQ_DEBUGGER.lock().unwrap() else { return };
-
-            dbg.print_call_stack();
-        });
-
-        listener.listen();
+        }
     });
 
 }
+
+
