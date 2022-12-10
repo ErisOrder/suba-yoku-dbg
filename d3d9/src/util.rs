@@ -20,7 +20,8 @@ enum Commands {
     #[clap(visible_alias = "loc")]
     Locals {
         /// Level of call stack. Can be found using backtrace.
-        level: u32
+        /// If not specified, print all
+        level: Option<u32>
     },
 
     /// Stub command for no-operation, does nothing
@@ -45,8 +46,8 @@ impl DebuggerFrontend {
         }
     }
 
-    fn print_locals(locals: Vec<SqLocalVar>) {
-        println!("Locals:");
+    fn print_locals(locals: Vec<SqLocalVar>, lvl: u32) {
+        println!("Level {lvl} locals:");
         for SqLocalVar { name, val } in locals {
             print!("{name}: {:?}", val.get_type());
             match val {
@@ -95,10 +96,21 @@ impl DebuggerFrontend {
                 Ok(bt) => Self::print_backtrace(bt),
                 Err(e) => println!("failed to get backtrace: {e}"),
             },
-            Commands::Locals { level } => match dbg.get_locals(level) {
-                Ok(locals) => Self::print_locals(locals),
-                Err(e) => println!("failed to get locals: {e}"),
+            Commands::Locals { level } => 
+            if let Some(lvl) = level {
+                match dbg.get_locals(lvl) {
+                    Ok(locals) => Self::print_locals(locals, lvl),
+                    Err(e) => println!("failed to get locals: {e}"),
+                }
+            } else {
+                let mut lvl = 1;
+                while let Ok(locals) = dbg.get_locals(lvl) {
+                    Self::print_locals(locals, lvl);
+                    println!();
+                    lvl += 1;
+                } 
             }
+
             Commands::Nop => (),
             Commands::Exit => std::process::exit(0),
         }
