@@ -1,11 +1,10 @@
 use sq_common::dbg;
 use clap::{Subcommand, Command, FromArgMatches};
-
+use anyhow::Result;
 /// CLI Frontend commands
 #[derive(Subcommand, Debug, Default)]
 enum Commands {
     /// Step one debug callback call
-    #[default]
     #[clap(visible_alias = "s")]
     Step,
 
@@ -13,8 +12,13 @@ enum Commands {
     #[clap(visible_alias = "c")]
     Continue,
 
-    /// Print call stack
-    Stack,
+    /// Print call backtrace
+    #[clap(visible_alias = "bt")]
+    Backtrace,
+
+    /// Stub command for no-operation, does nothing
+    #[default]
+    Nop,
 
     /// Exit process
     Exit,
@@ -25,32 +29,12 @@ pub struct DebuggerFrontend {
     last_cmd: Commands
 }
 
+/// Private methods
 impl DebuggerFrontend {
-    pub fn new() -> Self {
-        Self { last_cmd: Commands::default() }
-    }
-
-    /// Send last parsed args to debugger
-    pub fn do_actions(&self, dbg: &mut dbg::SqDebugger) {
-        match self.last_cmd {
-            Commands::Step => dbg.step(),
-            Commands::Continue => dbg.resume(),
-            Commands::Stack => dbg.print_call_stack(),
-            Commands::Exit => std::process::exit(0),
-        }
-    }
-
-    /// Save arguments to internal buffer, if successful
-    pub fn parse_args(&mut self, args: &str) {
-        match Self::cli().try_get_matches_from(args.trim().split(' ')) {
-            Ok(m) => {
-                self.last_cmd = Commands::from_arg_matches(&m).unwrap()
-            },
-            Err(e) => match e.kind() {
-                clap::error::ErrorKind::MissingSubcommand => println!("command is not specified"),
-                clap::error::ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand => (),
-                _ => println!("{e}"),
-            },
+    fn print_backtrace(bt: dbg::SqBacktrace) {
+        println!("Backtrace:");
+        for (lvl, info) in bt.into_iter().enumerate() {
+            println!("{:03}: {info}", lvl + 1);
         }
     }
 
@@ -69,6 +53,41 @@ impl DebuggerFrontend {
                 .subcommand_help_heading("Commands")
                 .help_template(PARSER_TEMPLATE)
         )
+    }
+}
+
+/// Public methods
+impl DebuggerFrontend {
+    pub fn new() -> Self {
+        Self { last_cmd: Commands::default() }
+    }
+
+    /// Send last parsed args to debugger
+    pub fn do_actions(&self, dbg: &mut dbg::SqDebugger) {
+        match self.last_cmd {
+            Commands::Step => match dbg.step() {
+                Ok(e) => println!("{e}"),
+                Err(e) => println!("step failed: {e}"),
+            } ,
+            Commands::Continue => dbg.resume(),
+            Commands::Backtrace => match dbg.get_backtrace() {
+                Ok(bt) => Self::print_backtrace(bt),
+                Err(e) => println!("failed to get backtrace: {e}"),
+            },
+            Commands::Nop => (),
+            Commands::Exit => std::process::exit(0),
+        }
+    }
+
+    /// Save arguments to internal buffer, if successful
+    pub fn parse_args(&mut self, args: &str) -> Result<()> {
+        match Self::cli().try_get_matches_from(args.trim().split(' ')) {
+            Ok(m) => {
+                self.last_cmd = Commands::from_arg_matches(&m)?;
+                Ok(())
+            },
+            Err(e) => Err(e.into()),
+        }
     }
 }
 

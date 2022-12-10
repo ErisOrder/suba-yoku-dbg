@@ -203,15 +203,21 @@ gen_hook! {
                     let Some(ref mut dbg) = *SQ_DEBUGGER.lock().unwrap()
                     else { return };
 
-                    println!("Reached breakpoint");
+                    dbg.halt(true).unwrap();
 
-                    dbg.halt();
+                    // We can`t block vm thread to wait for message on vm thread
+                    std::thread::spawn(|| {
+                        let Some(ref mut dbg) = *SQ_DEBUGGER.lock().unwrap()
+                        else { return };
+                        let dbg::DebugResp::Event(e) = 
+                            dbg.receiver().recv_timeout(std::time::Duration::from_millis(500)).unwrap()
+                        else { panic!("expected event") };
+                        println!("Reached breakpoint:\n{e}");
+                    });
                 }
             ));
 
             let dbg = dbg::SqDebugger::attach(vm);
-            dbg.enable_debug_messages(false);
-            //dbg.resume();
             *SQ_DEBUGGER.lock().unwrap() = Some(dbg);
 
             let bind_fn: crate::util::BindSQFnFn = std::mem::transmute(func_); 

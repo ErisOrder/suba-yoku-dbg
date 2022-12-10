@@ -84,8 +84,8 @@ fn dll_init() {
         else { return };
 
         if dbg.exec_state() == dbg::ExecState::Running {
-            dbg.halt();
-            println!("Execution halted");
+            let e = dbg.halt(false).unwrap().unwrap();
+            println!("Execution halted:\n{e}");
         }
     }).expect("failed to set ctrl+c handler");
 
@@ -108,22 +108,30 @@ fn dll_init() {
 
     std::thread::spawn(|| {
         let mut front = util::DebuggerFrontend::new();
+        let mut arg_str =  String::new();
 
         loop {
             std::thread::sleep(Duration::from_millis(20));
     
             let Some(ref mut dbg) = *hooks::SQ_DEBUGGER.lock().unwrap()
             else { continue };
+
+            // Flush any stored command
+            dbg.receiver().try_recv().ok();
     
             if let dbg::ExecState::Halted = dbg.exec_state() {
-                let mut arg_str =  String::new();
                 std::io::stdin().read_line(&mut arg_str).unwrap();
                 
                 if !arg_str.trim().is_empty() {
-                    front.parse_args(&arg_str);
+                    match front.parse_args(&arg_str) {
+                        Ok(_) => front.do_actions(dbg),
+                        Err(e) => println!("{e}"),
+                    };
+                } else { 
+                    front.do_actions(dbg);
                 }
 
-                front.do_actions(dbg);
+                arg_str.clear();
             }
         }
     });

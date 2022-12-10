@@ -72,7 +72,7 @@ pub struct SqStackInfo {
 
 impl std::fmt::Display for SqStackInfo {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{src}:{func}:{ln}",
+        write!(f, "{src}:{func} ({ln})",
             src = if let Some(src_f) = &self.src_file { src_f } else { "??" },
             func = if let Some(funcname) = &self.funcname { funcname } else { "??" },
             ln = if let Some(line) = self.line { line.to_string() } else { "??".into() }
@@ -210,15 +210,16 @@ where
         fn DebugHook(
             event_type: SQInteger,
             src_file: Option<String>,
-            line: Option<SQInteger>,
+            line: SQInteger,
             funcname: Option<String>,
             closure_box: SqUserData, // "captured"
         ) {
+            let line_opt = if line > 0 { Some(line) } else { None };
 
             let event = match char::from_u32(event_type as u32).unwrap() {
-                'l' => DebugEvent::Line(line.unwrap()),
-                'c' => DebugEvent::FnCall(funcname.unwrap_or_else(|| "??".into()), line),
-                'r' => DebugEvent::FnRet(funcname.unwrap_or_else(|| "??".into()), line),
+                'l' => DebugEvent::Line(line),
+                'c' => DebugEvent::FnCall(funcname.unwrap_or_else(|| "??".into()), line_opt),
+                'r' => DebugEvent::FnRet(funcname.unwrap_or_else(|| "??".into()), line_opt),
                 e => panic!("unknown debug event: {e}"),
             };
 
