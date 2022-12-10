@@ -1,4 +1,4 @@
-use sq_common::dbg;
+use sq_common::*;
 use clap::{Subcommand, Command, FromArgMatches};
 use anyhow::Result;
 /// CLI Frontend commands
@@ -15,6 +15,13 @@ enum Commands {
     /// Print call backtrace
     #[clap(visible_alias = "bt")]
     Backtrace,
+
+    /// Print local variables list at specified call stack level
+    #[clap(visible_alias = "loc")]
+    Locals {
+        /// Level of call stack. Can be found using backtrace.
+        level: u32
+    },
 
     /// Stub command for no-operation, does nothing
     #[default]
@@ -35,6 +42,20 @@ impl DebuggerFrontend {
         println!("Backtrace:");
         for (lvl, info) in bt.into_iter().enumerate() {
             println!("{:03}: {info}", lvl + 1);
+        }
+    }
+
+    fn print_locals(locals: Vec<SqLocalVar>) {
+        println!("Locals:");
+        for SqLocalVar { name, val } in locals {
+            print!("{name}: {:?}", val.get_type());
+            match val {
+                DynSqVar::Integer(i) => println!(" = {i}"),
+                DynSqVar::Float(f) => println!(" = {f}"),
+                DynSqVar::Bool(b) => println!(" = {b}"),
+                DynSqVar::String(s) => println!(" = \"{s}\""),
+                _ => println!(),
+            }
         }
     }
 
@@ -74,6 +95,10 @@ impl DebuggerFrontend {
                 Ok(bt) => Self::print_backtrace(bt),
                 Err(e) => println!("failed to get backtrace: {e}"),
             },
+            Commands::Locals { level } => match dbg.get_locals(level) {
+                Ok(locals) => Self::print_locals(locals),
+                Err(e) => println!("failed to get locals: {e}"),
+            }
             Commands::Nop => (),
             Commands::Exit => std::process::exit(0),
         }

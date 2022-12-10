@@ -543,6 +543,14 @@ pub trait SQVm: SqVmErrorHandling {
     } 
 }
 
+#[derive(Clone, PartialEq, PartialOrd, Eq, Debug, Hash)]
+pub struct SqLocalVar {
+    pub name: String,
+    pub val: DynSqVar,
+}
+
+
+
 /// Basic debug api methods
 pub trait SqVmDebugBasic: SqVmApi + SqGet<DynSqVar>
 where Self: Sized
@@ -594,13 +602,13 @@ where Self: Sized
     /// 
     /// Free variables are treated as local variables, and will be returned
     /// as they would be at the base of the stack, just before the real local variable
-    fn get_local(&mut self, level: SQUnsignedInteger, idx: SQUnsignedInteger) -> Result<(String, DynSqVar)> {
+    fn get_local(&mut self, level: SQUnsignedInteger, idx: SQUnsignedInteger) -> Result<SqLocalVar> {
         let ptr = unsafe { sq_getlocal(self.handle(), level, idx) };
         if ptr != 0 as _ {
             let name = unsafe { cstr_to_string(ptr) };
             let val = self.get(-1)?;
             self.pop(1);
-            Ok((name, val))
+            Ok(SqLocalVar{ name, val })
         } else {
             bail!("Failed to get name of local at lvl: {level} idx: {idx}");
         }
@@ -1014,6 +1022,23 @@ pub enum DynSqVar {
     //Weakref(???)
     Unsupported(SqType)
 } 
+
+impl DynSqVar {
+    /// Get variable type
+    pub fn get_type(&self) -> SqType {
+        match self {
+            DynSqVar::Null => SqType::Null,
+            DynSqVar::Integer(_) => SqType::Integer,
+            DynSqVar::Float(_) => SqType::Float,
+            DynSqVar::Bool(_) => SqType::Bool,
+            DynSqVar::String(_) => SqType::String,
+            DynSqVar::Table(_) => SqType::Table,
+            DynSqVar::Array(_) => SqType::Array,
+            DynSqVar::UserData(_) => SqType::UserData,
+            DynSqVar::Unsupported(t) => *t,
+        }
+    }
+}
 
 impl PartialEq for DynSqVar {
     fn eq(&self, other: &Self) -> bool {

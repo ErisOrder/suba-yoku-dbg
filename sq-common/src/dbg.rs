@@ -1,7 +1,11 @@
 use std::{time::Duration, sync::{Arc, Mutex, mpsc}};
 use anyhow::{Result, bail};
+use squirrel2_kaleido_rs::SQUnsignedInteger;
 use crate::sq::*;
 //use squirrel2_kaleido_rs::*;
+
+
+const RECV_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Copy, Clone, PartialEq, PartialOrd, Eq, Ord, Debug, Hash)]
 pub enum ExecState {
@@ -12,6 +16,7 @@ pub enum ExecState {
 pub enum DebugMsg {
     Step,
     Backtrace,
+    Locals(SQUnsignedInteger)
 }
 
 #[derive(Clone, PartialEq, PartialOrd, Eq, Ord, Debug, Hash)]
@@ -41,11 +46,11 @@ impl std::fmt::Display for EventWithSrc {
 
 pub type SqBacktrace = Vec<SqStackInfo>;
 
-#[derive(Clone, PartialEq, PartialOrd, Eq, Ord, Debug, Hash)]
+#[derive(Clone, PartialEq, PartialOrd, Eq, Debug, Hash)]
 pub enum DebugResp {
-    /// event, src
     Event(EventWithSrc),
-    Backtrace(SqBacktrace)
+    Backtrace(SqBacktrace),
+    Locals(Option<Vec<SqLocalVar>>)
 }
 
 pub struct SqDebugger<'a>{
@@ -100,6 +105,15 @@ impl<'a> SqDebugger<'a>
                         }
                         resp_tx.send(DebugResp::Backtrace(bt)).unwrap();
                     },
+                    DebugMsg::Locals(lvl) => {
+                        let mut v = vec![];
+                        let mut idx = 0;
+                        while let Ok(loc) = vm.get_local(lvl, idx) {
+                            v.push(loc);
+                            idx += 1;
+                        }
+                        resp_tx.send(DebugResp::Locals(if v.is_empty() { None } else { Some(v) })).unwrap();
+                    },
                 }}
 
                 if *exec_state.lock().unwrap() == ExecState::Running {
@@ -136,7 +150,7 @@ impl<'a> SqDebugger<'a>
         };
         
         if prev == ExecState::Running && !no_recv {
-            match self.receiver.recv_timeout(Duration::from_millis(500)) {
+            match self.receiver.recv_timeout(RECV_TIMEOUT) {
                 Ok(DebugResp::Event(e)) => Ok(Some(e)),
                 Ok(r) => bail!("{r:?}: expected event"),
                 Err(e) => bail!("{e}")
@@ -149,9 +163,24 @@ impl<'a> SqDebugger<'a>
     /// Returns received event
     pub fn step(&self) -> Result<EventWithSrc> {
         self.sender.send(DebugMsg::Step)?;
-        match self.receiver.recv_timeout(Duration::from_millis(500)) {
+        match self.receiver.recv_timeout(RECV_TIMEOUT) {
             Ok(DebugResp::Event(e)) => Ok(e),
             Ok(r) => bail!("{r:?}: expected event"),
+            Err(e) => bail!("{e}")
+        }
+    }
+
+    /// Get local variables and their values at specified level.
+    /// 
+    /// May be pretty expensive
+    pub fn get_locals(&self, lvl: SQUnsignedInteger) -> Result<Vec<SqLocalVar>> {
+        self.sender.send(DebugMsg::Locals(lvl))?;
+        match self.receiver.recv_timeout(RECV_TIMEOUT) {
+            Ok(DebugResp::Locals(loc)) => 
+                if let Some(loc) = loc {
+                    Ok(loc)
+                } else { bail!("no locals at level {lvl}") },
+            Ok(r) => bail!("{r:?}: expected locals"),
             Err(e) => bail!("{e}")
         }
     }
@@ -164,7 +193,7 @@ impl<'a> SqDebugger<'a>
     /// ```
     pub fn get_backtrace(&self) -> Result<SqBacktrace> {
         self.sender.send(DebugMsg::Backtrace)?;
-        match self.receiver.recv_timeout(Duration::from_millis(500)) {
+        match self.receiver.recv_timeout(RECV_TIMEOUT) {
             Ok(DebugResp::Backtrace(bt)) => Ok(bt),
             Ok(r) => bail!("{r:?}: expected backtrace"),
             Err(e) => bail!("{e}")
