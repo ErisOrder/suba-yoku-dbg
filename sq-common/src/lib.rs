@@ -1,4 +1,4 @@
 mod sq;
+pub mod dbg;
 pub use sq::*;
 
-pub mod dbg;

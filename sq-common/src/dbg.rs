@@ -1,9 +1,6 @@
 use std::{time::Duration, sync::{Arc, Mutex, mpsc}};
 use anyhow::{Result, bail};
-use squirrel2_kaleido_rs::SQUnsignedInteger;
 use crate::sq::*;
-//use squirrel2_kaleido_rs::*;
-
 
 const RECV_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -16,7 +13,7 @@ pub enum ExecState {
 pub enum DebugMsg {
     Step,
     Backtrace,
-    Locals(SQUnsignedInteger)
+    Locals(SqUnsignedInteger)
 }
 
 #[derive(Clone, PartialEq, PartialOrd, Eq, Ord, Debug, Hash)]
@@ -173,7 +170,7 @@ impl<'a> SqDebugger<'a>
     /// Get local variables and their values at specified level.
     /// 
     /// May be pretty expensive
-    pub fn get_locals(&self, lvl: SQUnsignedInteger) -> Result<Vec<SqLocalVar>> {
+    pub fn get_locals(&self, lvl: SqUnsignedInteger) -> Result<Vec<SqLocalVar>> {
         self.sender.send(DebugMsg::Locals(lvl))?;
         match self.receiver.recv_timeout(RECV_TIMEOUT) {
             Ok(DebugResp::Locals(loc)) => 

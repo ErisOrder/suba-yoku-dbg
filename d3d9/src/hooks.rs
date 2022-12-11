@@ -6,11 +6,10 @@ use region::Protection;
 use anyhow::Result;
 use lazy_static::lazy_static;
 use util_proc_macro::{sqfn, sq_closure};
+use sq_common::*;
 
 use crate::{wrappers, sq_bind_method};
-use sq_common::*;
-use sq_common::dbg;
-use squirrel2_kaleido_rs::SQInteger;
+
 
 const CALL_SIZE: usize = 5;
 
@@ -193,7 +192,7 @@ gen_hook! {
 
             vm.register_closure("TestAutoGen", sq_closure!(
             #[(print_args = true)] 
-            move |a: SQInteger| {
+            move |a: SqInteger| {
                 xx += a;
                 debug!("Called autogen closure: {a} {}", xx);
             }));
@@ -260,19 +259,19 @@ gen_hook! {
 
 
 #[sqfn(sqrat_method = true)]
-fn TestFunction() -> SQInteger {
+fn TestFunction() -> SqInteger {
     777
 }
 
 
 #[sqfn(sqrat_method = true)]
-fn SingleArg(a: SQInteger) -> SQInteger {
+fn SingleArg(a: SqInteger) -> SqInteger {
     a
 }
 
 
 #[sqfn(sqrat_method = true)]
-fn TestArgs(a1: SQInteger, a2: SQInteger) -> SQInteger {
+fn TestArgs(a1: SqInteger, a2: SqInteger) -> SqInteger {
     a1 + a2
 }
 
@@ -304,12 +303,12 @@ fn TestDyn(d: DynSqVar) -> DynSqVar {
 }
 
 #[sqfn(sqrat_method = true)]
-fn TestStaticArr(a: Vec<SQInteger>) -> SQInteger {
+fn TestStaticArr(a: Vec<SqInteger>) -> SqInteger {
     a.into_iter().sum()
 }
 
 #[sqfn(varargs = "varargs", sqrat_method = true)]
-fn TestVarargs(_norm: DynSqVar) -> SQInteger {
+fn TestVarargs(_norm: DynSqVar) -> SqInteger {
     varargs.len() as _
 }
 

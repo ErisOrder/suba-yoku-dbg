@@ -16,8 +16,6 @@ pub struct SQFnMacroArgs {
     #[darling(default)]
     sq_wrap_path: Option<String>,
     #[darling(default)]
-    sq_lib_path: Option<String>,
-    #[darling(default)]
     print_args: bool,
     #[darling(default)]
     sqrat_method: bool,
@@ -27,12 +25,9 @@ pub struct SQFnMacroArgs {
 pub struct SQSetModArgs {
     #[darling(default)]
     sq_wrap_path: Option<String>,
-    #[darling(default)]
-    sq_lib_path: Option<String>
 }
 
 static mut SQ_WRAPPER_MOD: Option<String> = None;
-static mut SQ_LIB_MOD: Option<String> = None;
 
 pub fn sq_set_mod_impl(args: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let attr_args = parse_macro_input!(args as AttributeArgs);
@@ -41,10 +36,6 @@ pub fn sq_set_mod_impl(args: proc_macro::TokenStream) -> proc_macro::TokenStream
         Ok(v) => v,
         Err(e) => { return proc_macro::TokenStream::from(e.write_errors()); }
     };
-
-    if let Some(s) = args.sq_lib_path {
-        unsafe { SQ_LIB_MOD = Some(s) }
-    }
 
     if let Some(s) = args.sq_wrap_path {
         unsafe { SQ_WRAPPER_MOD = Some(s) }
@@ -148,15 +139,6 @@ pub fn sqfn_impl(
         else { "sq_common" }; 
         
         Path::from_string(wrapper_path).expect("failed to parse sq wrapper path")
-    };
-
-    let sq_lib_mod = {
-        let lib_path = 
-        if let Some(ref s) = args.sq_lib_path { s }
-        else if let Some(s) = unsafe { &SQ_LIB_MOD } { s }
-        else { "squirrel2_kaleido_rs" }; 
-
-        Path::from_string(lib_path).expect("failed to parse sq lib path")
     };
 
     let pub_vis = Visibility::from_string("pub").unwrap();
@@ -267,7 +249,6 @@ pub fn sqfn_impl(
 
     let imports = quote! {
         use log::debug;
-        use #sq_lib_mod::*;
         use #sq_wrapper_mod::*;
     };
 
@@ -342,8 +323,8 @@ pub fn sqfn_impl(
     
                 #[allow(unreachable_code, unused_variables, unused)]
                 pub unsafe extern "C" fn sq_fn(
-                    hvm: #sq_lib_mod::HSQUIRRELVM
-                ) -> #sq_lib_mod::SQInteger {
+                    hvm: #sq_wrapper_mod::HSQUIRRELVM
+                ) -> #sq_wrapper_mod::SqInteger {
                     #imports
 
                     // Cannot be closed if passed to method
@@ -368,7 +349,7 @@ pub fn sqfn_impl(
             let move_kw = item_clos.capture;
             item_clos.capture = None;
             quote! {
-                Box::new(#move_kw |#vm_ident: &mut #sq_wrapper_mod::FriendVm| -> #sq_lib_mod::SQInteger {
+                Box::new(#move_kw |#vm_ident: &mut #sq_wrapper_mod::FriendVm| -> #sq_wrapper_mod::SqInteger {
                     #imports
 
                     #sq_fn_body_start

@@ -1,11 +1,16 @@
 use anyhow::{bail, Context};
 use squirrel2_kaleido_rs::*;
-use util_proc_macro::sqfn;
+use util_proc_macro::{sqfn, set_sqfn_paths};
 use std::{ptr::addr_of_mut, cmp::Ordering, collections::HashMap, hash::Hash};
 use anyhow::{
     Result,
     anyhow
 };
+
+set_sqfn_paths!(sq_wrap_path = "self");
+
+/// Re-export
+pub use squirrel2_kaleido_rs::HSQUIRRELVM;
 
 /// Copy foreign C str to owned String
 ///
@@ -67,7 +72,7 @@ pub struct SqFunctionInfo {
 pub struct SqStackInfo {
     pub funcname: Option<String>,
     pub src_file: Option<String>,
-    pub line: Option<SQInteger>, 
+    pub line: Option<SqInteger>, 
 }
 
 impl std::fmt::Display for SqStackInfo {
@@ -83,20 +88,29 @@ impl std::fmt::Display for SqStackInfo {
 pub type SqDebugHook<'a> = dyn FnMut(DebugEvent, Option<String>, &mut FriendVm) + Send + 'a;
 
 /// C SQFunction type 
-pub type SQFn = unsafe extern "C" fn(HSQUIRRELVM) -> SQInteger;
+pub type SQFn = unsafe extern "C" fn(HSQUIRRELVM) -> SqInteger;
 
 /// Safe abstraction for SQFn
-pub type SQFnClosure<'a> = dyn FnMut(&mut FriendVm) -> SQInteger + Send + 'a; 
+pub type SqFnClosure<'a> = dyn FnMut(&mut FriendVm) -> SqInteger + Send + 'a; 
+
+/// For naming consistency
+pub type SqInteger = SQInteger;
+
+/// For naming consistency
+pub type SqUnsignedInteger = SQUnsignedInteger;
+
+/// For naming consistency
+pub type SqFloat = SQFloat;
 
 /// Event that VM debug hook may receive
 #[derive(Clone, PartialEq, PartialOrd, Eq, Ord, Debug, Hash)]
 pub enum DebugEvent {
     /// Linenumber
-    Line(SQInteger),
+    Line(SqInteger),
     /// Function name, linenumber
-    FnCall(String, Option<SQInteger>),
+    FnCall(String, Option<SqInteger>),
     /// Function name, linenumber
-    FnRet(String, Option<SQInteger>),
+    FnRet(String, Option<SqInteger>),
 }
 
 
@@ -124,7 +138,7 @@ pub enum SqType {
 }
 
 #[derive(Copy, Clone, PartialEq, PartialOrd, Eq, Ord, Debug, Hash)]
-pub struct SQNull;
+pub struct SqNull;
 
 impl From<SQObjectType> for SqType {
 
@@ -165,7 +179,7 @@ pub trait SqVmHandle {
 pub struct SafeVm<'a> {
     handle: HSQUIRRELVM,
     debug_hook: Option<Box<Box<SqDebugHook<'a>>>>,
-    native_closures: HashMap<String, Box<Box<SQFnClosure<'a>>>>
+    native_closures: HashMap<String, Box<Box<SqFnClosure<'a>>>>
 }
 
 /// It`s not safe, but it`s needed
@@ -188,9 +202,9 @@ where
     'a: 'b
 {
     /// Creates a new instance of a squirrel VM that consists in a new execution stack.
-    pub fn open(initial_stack_size: usize) -> Self {
+    pub fn open(initial_stack_size: SqInteger) -> Self {
         let handle = unsafe {
-             sq_open(initial_stack_size as _)
+             sq_open(initial_stack_size)
         };
         Self { handle, debug_hook: None, native_closures: HashMap::new() }
     }
@@ -206,11 +220,11 @@ where
         let hook_box = Box::new(hook); 
 
         #[allow(clippy::borrowed_box)]
-        #[sqfn(sq_lib_path = "squirrel2_kaleido_rs", sq_wrap_path = "self", vm_var = "vm")]
+        #[sqfn(vm_var = "vm")]
         fn DebugHook(
-            event_type: SQInteger,
+            event_type: SqInteger,
             src_file: Option<String>,
-            line: SQInteger,
+            line: SqInteger,
             funcname: Option<String>,
             closure_box: SqUserData, // "captured"
         ) {
@@ -247,11 +261,11 @@ where
         }
     }
     
-    pub fn register_closure(&'b mut self, name: &str, closure: Box<SQFnClosure<'a>>) {
+    pub fn register_closure(&'b mut self, name: &str, closure: Box<SqFnClosure<'a>>) {
         let clos_box = Box::new(closure); 
 
         #[allow(clippy::borrowed_box)]
-        unsafe extern "C" fn glue(hvm: HSQUIRRELVM) -> SQInteger {
+        unsafe extern "C" fn glue(hvm: HSQUIRRELVM) -> SqInteger {
             let mut vm = UnsafeVm::from_handle(hvm).into_friend();
 
             let top = vm.stack_len();
@@ -260,7 +274,7 @@ where
             let closure_box: usize = unsafe { std::ptr::read(closure_box.unwrap().as_ptr() as _) };
 
             // Must be safe as long as wrapper bound with VM is alive
-            let closure: &mut Box<SQFnClosure> = unsafe {
+            let closure: &mut Box<SqFnClosure> = unsafe {
                 &mut *(closure_box as *mut _) 
             };
 
@@ -413,28 +427,28 @@ pub trait SQVm: SqVmErrorHandling {
     // Stack
 
     /// Pops `count` elements from the stack
-    fn pop(&mut self, count: SQInteger) {
+    fn pop(&mut self, count: SqInteger) {
         unsafe { sq_pop(self.handle(), count) }
     }
 
     // TODO: Check, how exactly this works
     /// Pushes copy(?) of an object at the `idx`
-    fn clone_idx(&mut self, idx: SQInteger) {
+    fn clone_idx(&mut self, idx: SqInteger) {
         unsafe { sq_push(self.handle(), idx) }
     }
 
     /// Pushes a weak reference or copy in case of value object at the `idx` in the stack
-    fn ref_idx(&mut self, idx: SQInteger) {
+    fn ref_idx(&mut self, idx: SqInteger) {
         unsafe { sq_weakref(self.handle(), idx) }
     }
 
     /// Removes an element from an arbitrary position in the stack
-    fn remove(&mut self, idx: SQInteger) {
+    fn remove(&mut self, idx: SqInteger) {
         unsafe { sq_remove(self.handle(), idx) }
     }
 
     /// Returns the index of the top of the stack
-    fn stack_len(&mut self) -> SQInteger {
+    fn stack_len(&mut self) -> SqInteger {
         unsafe { sq_gettop(self.handle()) } 
     }
 
@@ -448,12 +462,12 @@ pub trait SQVm: SqVmErrorHandling {
 
     /// Ensure that the stack space left is at least of a specified `size`.
     /// If the stack is smaller it will automatically grow.
-    fn reserve_stack(&mut self, size: SQInteger) {
+    fn reserve_stack(&mut self, size: SqInteger) {
         unsafe { sq_reservestack(self.handle(), size) }
     } 
 
     /// Pushes the object at the position `idx` of the source vm stack in the destination vm stack
-    fn move_obj(&mut self, to: &mut SafeVm, idx: SQInteger) {
+    fn move_obj(&mut self, to: &mut SafeVm, idx: SqInteger) {
         unsafe { sq_move(to.handle, self.handle(), idx) }
     }
 
@@ -462,7 +476,7 @@ pub trait SQVm: SqVmErrorHandling {
         match unsafe { sq_cmp(self.handle()) } {
             1.. => Ordering::Greater,
             0 => Ordering::Equal,
-            SQInteger::MIN..=-1 => Ordering::Less,
+            SqInteger::MIN..=-1 => Ordering::Less,
         }
     }
 
@@ -471,7 +485,7 @@ pub trait SQVm: SqVmErrorHandling {
 
     /// Get the type of the value at the position `idx` in the stack
     #[inline]
-    fn get_type(&mut self, idx: SQInteger) -> SqType {
+    fn get_type(&mut self, idx: SqInteger) -> SqType {
         unsafe { sq_gettype(self.handle(), idx) }.into()
     }
 
@@ -482,7 +496,7 @@ pub trait SQVm: SqVmErrorHandling {
 
     /// Pops a value from the stack and pushes it in the back
     /// of the array at the position `idx` in the stack.
-    fn array_append(&mut self, idx: SQInteger) -> Result<()> {
+    fn array_append(&mut self, idx: SqInteger) -> Result<()> {
         sq_try! { self, unsafe { sq_arrayappend(self.handle(), idx) } }
             .context(format!("Failed to insert value to array at index {idx}"))?;
         Ok(())
@@ -500,7 +514,7 @@ pub trait SQVm: SqVmErrorHandling {
     /// 
     /// if `is_static = true` creates a static member.
     /// This parameter is only used if the target object is a class
-    fn new_slot(&mut self, idx: SQInteger, is_static: bool) -> Result<()> {
+    fn new_slot(&mut self, idx: SqInteger, is_static: bool) -> Result<()> {
         sq_try! { self, unsafe { sq_newslot(self.handle(), idx, is_static as _) } }
             .context(format!("Failed to create slot for table at idx {idx}"))?;
         Ok(())
@@ -511,7 +525,7 @@ pub trait SQVm: SqVmErrorHandling {
     /// 
     /// this call will invoke the delegation system like a normal assignment,
     /// it only works on tables, arrays and userdata.
-    fn slot_set(&mut self, idx: SQInteger) -> Result<()> {
+    fn slot_set(&mut self, idx: SqInteger) -> Result<()> {
         sq_try! { self, unsafe { sq_set(self.handle(), idx) } }
             .context(format!("Failed to set slot value for table at idx {idx}"))?;
         Ok(())
@@ -529,7 +543,7 @@ pub trait SQVm: SqVmErrorHandling {
     /// 
     /// The function will fail when all slots have been iterated
     /// (see Tables and arrays manipulation)
-    fn sq_iter_next(&mut self, idx: SQInteger) -> Result<()> {
+    fn sq_iter_next(&mut self, idx: SqInteger) -> Result<()> {
         if unsafe { sq_next(self.handle(), idx) } >= 0 {
             Ok(())
         } else {
@@ -562,7 +576,7 @@ where Self: Sized
     /// this method will fail if the closure in the stack is a native C closure.
     /// 
     /// NOTE: Feels like legacy version of `get_stack_info`
-    fn get_function_info(&mut self, level: SQInteger) -> Result<SqFunctionInfo> {
+    fn get_function_info(&mut self, level: SqInteger) -> Result<SqFunctionInfo> {
         let mut func_info = unsafe { std::mem::zeroed() };
 
         sq_try! { self,
@@ -580,7 +594,7 @@ where Self: Sized
     }
 
     /// Retrieve the call stack informations of a certain `level` in the calls stack
-    fn get_stack_info(&mut self, level: SQUnsignedInteger) -> Result<SqStackInfo> {
+    fn get_stack_info(&mut self, level: SqUnsignedInteger) -> Result<SqStackInfo> {
         let mut stack_info = unsafe { std::mem::zeroed() };
 
         sq_try! { self,
@@ -602,7 +616,7 @@ where Self: Sized
     /// 
     /// Free variables are treated as local variables, and will be returned
     /// as they would be at the base of the stack, just before the real local variable
-    fn get_local(&mut self, level: SQUnsignedInteger, idx: SQUnsignedInteger) -> Result<SqLocalVar> {
+    fn get_local(&mut self, level: SqUnsignedInteger, idx: SqUnsignedInteger) -> Result<SqLocalVar> {
         let ptr = unsafe { sq_getlocal(self.handle(), level, idx) };
         if ptr != 0 as _ {
             let name = unsafe { cstr_to_string(ptr) };
@@ -631,7 +645,7 @@ pub trait SqVmApi: SqVmErrorHandling {
         }
     
         /// Get a pointer to the string at the `idx` position in the stack.
-        unsafe fn get_string(&mut self, idx: SQInteger) -> Result<*const u8> {
+        unsafe fn get_string(&mut self, idx: SqInteger) -> Result<*const u8> {
             let mut ptr = std::ptr::null_mut();
             sq_try! { self,
                 sq_getstring(self.handle(), idx, addr_of_mut!(ptr) as _) 
@@ -641,12 +655,12 @@ pub trait SqVmApi: SqVmErrorHandling {
     
         /// Pushes a integer into the stack
         #[inline]
-        unsafe fn push_integer(&mut self, int: SQInteger) {
+        unsafe fn push_integer(&mut self, int: SqInteger) {
             sq_pushinteger(self.handle(), int)
         }
     
         // Get the value of the integer at the `idx` position in the stack.
-        unsafe fn get_integer(&mut self, idx: SQInteger) -> Result<SQInteger> {
+        unsafe fn get_integer(&mut self, idx: SqInteger) -> Result<SqInteger> {
             let mut out = 0;
             sq_try! { self,
                 sq_getinteger(self.handle(), idx, addr_of_mut!(out)) 
@@ -661,7 +675,7 @@ pub trait SqVmApi: SqVmErrorHandling {
         }
     
         /// Get the value of the bool at the `idx` position in the stack.
-        unsafe fn get_bool(&mut self, idx: SQInteger) -> Result<bool> {
+        unsafe fn get_bool(&mut self, idx: SqInteger) -> Result<bool> {
             let mut out = 0;
             sq_try! { self,
                 sq_getbool(self.handle(), idx, addr_of_mut!(out)) 
@@ -671,12 +685,12 @@ pub trait SqVmApi: SqVmErrorHandling {
     
         /// Pushes a float into the stack
         #[inline]
-        unsafe fn push_float(&mut self, f: SQFloat) {
+        unsafe fn push_float(&mut self, f: SqFloat) {
             sq_pushfloat(self.handle(), f)
         }
     
         /// Gets the value of the float at the idx position in the stack.
-        unsafe fn get_float(&mut self, idx: SQInteger) -> Result<SQFloat> {
+        unsafe fn get_float(&mut self, idx: SqInteger) -> Result<SqFloat> {
             let mut out = 0.0;
             sq_try! { self,
                 sq_getfloat(self.handle(), idx, addr_of_mut!(out)) 
@@ -690,7 +704,7 @@ pub trait SqVmApi: SqVmErrorHandling {
         }
     
         /// Creates a new userdata and pushes it in the stack
-        unsafe fn new_userdata(&mut self, size: SQUnsignedInteger) -> SQUserPointer {
+        unsafe fn new_userdata(&mut self, size: SqUnsignedInteger) -> SQUserPointer {
             sq_newuserdata(self.handle(), size)
         }
     
@@ -699,7 +713,7 @@ pub trait SqVmApi: SqVmErrorHandling {
         /// Returns (`ptr`, `type_tag`)
         /// * `ptr` - userpointer that will point to the userdata's payload
         /// * `type_tag` -  `SQUserPointer` that will store the userdata tag(see sq_settypetag).
-        unsafe fn get_userdata(&mut self, idx: SQInteger) -> Result<(SQUserPointer, SQUserPointer)> {
+        unsafe fn get_userdata(&mut self, idx: SqInteger) -> Result<(SQUserPointer, SQUserPointer)> {
             let mut ptr = std::ptr::null_mut();
             let mut typetag = std::ptr::null_mut();
             sq_try! { self,
@@ -709,7 +723,7 @@ pub trait SqVmApi: SqVmErrorHandling {
         }
     
         /// Get the value of the userpointer at the `idx` position in the stack.
-        unsafe fn get_userpointer(&mut self, idx: SQInteger) -> Result<SQUserPointer> {
+        unsafe fn get_userpointer(&mut self, idx: SqInteger) -> Result<SQUserPointer> {
             let mut ptr = std::ptr::null_mut();
             sq_try! { self,
                 sq_getuserpointer(self.handle(), idx, addr_of_mut!(ptr))
@@ -719,7 +733,7 @@ pub trait SqVmApi: SqVmErrorHandling {
     
         /// Returns the size of a value at the idx position in the stack
         /// Works only for arrays, tables, userdata, and strings
-        unsafe fn get_size(&mut self, idx: SQInteger) -> Result<SQInteger> {
+        unsafe fn get_size(&mut self, idx: SqInteger) -> Result<SqInteger> {
             sq_try! { self,
                 sq_getsize(self.handle(), idx)
             }.context(format!("Failed to get size of value at idx {idx}"))
@@ -736,7 +750,7 @@ pub trait SqVmApi: SqVmErrorHandling {
     
         /// Create a new native closure, pops `free_vars` values and set those
         /// as free variables of the new closure, and push the new closure in the stack
-        unsafe fn new_closure(&mut self, f: SQFn, free_vars: SQUnsignedInteger) {
+        unsafe fn new_closure(&mut self, f: SQFn, free_vars: SqUnsignedInteger) {
             sq_newclosure(self.handle(), Some(f), free_vars)
         }
 }
@@ -758,7 +772,7 @@ pub trait SqGet<T> {
     /// Get value from the vm stack at position `idx`
     /// 
     /// if `idx` < 0, count from the top, else from the stack bottom
-    fn get(&mut self, idx: SQInteger) -> Result<T>;
+    fn get(&mut self, idx: SqInteger) -> Result<T>;
 }
 
 pub trait SqThrow<T> {
@@ -786,15 +800,15 @@ impl<T: SqVmApi> SqPush<SQFn> for T {
     }
 }
 
-impl<T: SqVmApi> SqPush<SQInteger> for T {
-    fn push(&mut self, val: SQInteger) -> Result<()> {
+impl<T: SqVmApi> SqPush<SqInteger> for T {
+    fn push(&mut self, val: SqInteger) -> Result<()> {
         unsafe { self.push_integer(val) }
         Ok(())
     }
 }
 
-impl<T: SqVmApi> SqGet<SQInteger> for T {
-    fn get(&mut self, idx: SQInteger) -> Result<SQInteger> {
+impl<T: SqVmApi> SqGet<SqInteger> for T {
+    fn get(&mut self, idx: SqInteger) -> Result<SqInteger> {
         unsafe { self.get_integer(idx) }
     }
 }
@@ -815,7 +829,7 @@ impl<T: SqVmApi> SqPush<&str> for T {
 
 // TODO: Use get_size() to make this more safe
 impl<T: SqVmApi> SqGet<String> for T {
-    fn get(&mut self, idx: SQInteger) -> Result<String> {
+    fn get(&mut self, idx: SqInteger) -> Result<String> {
         let ptr = unsafe { self.get_string(idx) }?;
 
         unsafe {
@@ -825,18 +839,18 @@ impl<T: SqVmApi> SqGet<String> for T {
 }
 
 /// Just for abstraction...
-impl<T: SqVmApi> SqPush<SQNull> for T {
-    fn push(&mut self, _: SQNull) -> Result<()> {
+impl<T: SqVmApi> SqPush<SqNull> for T {
+    fn push(&mut self, _: SqNull) -> Result<()> {
         unsafe { self.push_null(); }
         Ok(())
     }
 }
 
 /// For type safety
-impl<T: SqVmApi> SqGet<SQNull> for T {
-    fn get(&mut self, idx: SQInteger) -> Result<SQNull> {
+impl<T: SqVmApi> SqGet<SqNull> for T {
+    fn get(&mut self, idx: SqInteger) -> Result<SqNull> {
         match self.get_type(idx) {
-            SqType::Null => Ok(SQNull),
+            SqType::Null => Ok(SqNull),
             other => 
                 bail!("Failed to get null at idx {idx}: object type is {other:?}"),
         }
@@ -863,10 +877,10 @@ impl<VM, T> SqGet<Vec<T>> for VM
 where 
     VM: SqGet<T> + SqVmApi
 {
-    fn get(&mut self, idx: SQInteger) -> Result<Vec<T>> {
+    fn get(&mut self, idx: SqInteger) -> Result<Vec<T>> {
         // Push a reference to an array to the stack top and a null iterator
         self.ref_idx(idx);
-        self.push(SQNull)?;
+        self.push(SqNull)?;
 
         let mut out = vec![];
 
@@ -905,10 +919,10 @@ where
     VM: SqGet<K> + SqGet<V> + SqVmApi,
     K: PartialEq + Eq + Hash,
 {
-    fn get(&mut self, idx: SQInteger) -> Result<HashMap<K, V>> {
+    fn get(&mut self, idx: SqInteger) -> Result<HashMap<K, V>> {
         // Push a reference to a table to the stack top and a null iterator
         self.ref_idx(idx);
-        self.push(SQNull)?;
+        self.push(SqNull)?;
 
         let mut out = HashMap::new();
 
@@ -926,15 +940,15 @@ where
     }
 }
 
-impl<T: SqVmApi> SqPush<SQFloat> for T {
-    fn push(&mut self, val: SQFloat) -> Result<()> {
+impl<T: SqVmApi> SqPush<SqFloat> for T {
+    fn push(&mut self, val: SqFloat) -> Result<()> {
         unsafe { self.push_float(val) }
         Ok(())
     }
 }
 
-impl<T: SqVmApi> SqGet<SQFloat> for T {
-    fn get(&mut self, idx: SQInteger) -> Result<SQFloat> {
+impl<T: SqVmApi> SqGet<SqFloat> for T {
+    fn get(&mut self, idx: SqInteger) -> Result<SqFloat> {
         unsafe { self.get_float(idx) }
     }
 }
@@ -947,7 +961,7 @@ impl<T: SqVmApi> SqPush<bool> for T {
 }
 
 impl<T: SqVmApi> SqGet<bool> for T {
-    fn get(&mut self, idx: SQInteger) -> Result<bool> {
+    fn get(&mut self, idx: SqInteger) -> Result<bool> {
         unsafe { self.get_bool(idx) }
     }
 }
@@ -965,7 +979,7 @@ impl<T: SqVmApi> SqPush<SqUserData> for T {
 }
 
 impl<T: SqVmApi> SqGet<SqUserData> for T {
-    fn get(&mut self, idx: SQInteger) -> Result<SqUserData> {
+    fn get(&mut self, idx: SqInteger) -> Result<SqUserData> {
         match unsafe { self.get_userdata(idx) } {
             Ok((user_data, _)) => {
                 let out = unsafe {
@@ -990,7 +1004,7 @@ where
     fn push(&mut self, val: Option<T>) -> Result<()> {
         match val {
             Some(v) => self.push(v),
-            None => SqPush::<SQNull>::push(self, SQNull),
+            None => SqPush::<SqNull>::push(self, SqNull),
         }
     }
 }
@@ -999,7 +1013,7 @@ impl<VM, T> SqGet<Option<T>> for VM
 where
     VM: SqGet<T> + SqVmApi
 {
-    fn get(&mut self, idx: SQInteger) -> Result<Option<T>> {
+    fn get(&mut self, idx: SqInteger) -> Result<Option<T>> {
         match self.get_type(idx) {
             SqType::Null => Ok(None),
             _ => Ok(Some(SqGet::<T>::get(self, idx)?))
@@ -1010,8 +1024,8 @@ where
 #[derive(Clone, Debug)]
 pub enum DynSqVar {
     Null,
-    Integer(SQInteger),
-    Float(SQFloat),
+    Integer(SqInteger),
+    Float(SqFloat),
     Bool(bool),
     String(String),
     Table(HashMap<DynSqVar, DynSqVar>),
@@ -1128,12 +1142,12 @@ impl Hash for DynSqVar {
 
 impl<VM> SqPush<DynSqVar> for VM
 where 
-    VM: SqVmApi + SqGet<SQNull> // TODO: Why this is working?
+    VM: SqVmApi + SqGet<SqNull> // TODO: Why this is working?
     
 {
     fn push(&mut self, val: DynSqVar) -> Result<()> {
         match val {
-            DynSqVar::Null => self.push(SQNull),
+            DynSqVar::Null => self.push(SqNull),
             DynSqVar::Integer(i) => self.push(i),
             DynSqVar::String(s) => self.push(s),
             DynSqVar::Array(v) => self.push(v),
@@ -1150,9 +1164,9 @@ where
 
 impl<VM> SqGet<DynSqVar> for VM
 where 
-    VM: SqVmApi + SqGet<SQNull> 
+    VM: SqVmApi + SqGet<SqNull> 
 {
-    fn get(&mut self, idx: SQInteger) -> Result<DynSqVar> {
+    fn get(&mut self, idx: SqInteger) -> Result<DynSqVar> {
         match self.get_type(idx) {
             SqType::Null => Ok(DynSqVar::Null),
             SqType::Integer => Ok(DynSqVar::Integer(self.get(idx)?)),
