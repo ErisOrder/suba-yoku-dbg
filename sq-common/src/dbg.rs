@@ -5,7 +5,7 @@ use crate::sq::*;
 //use squirrel2_kaleido_rs::*;
 
 
-const RECV_TIMEOUT: Duration = Duration::from_secs(5);
+const RECV_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Copy, Clone, PartialEq, PartialOrd, Eq, Ord, Debug, Hash)]
 pub enum ExecState {

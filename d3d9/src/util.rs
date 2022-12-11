@@ -24,6 +24,18 @@ enum Commands {
         level: Option<u32>
     },
 
+    /// Print value of local variable
+    #[clap(visible_alias = "x")]
+    Examine {
+        /// Name of local variable
+        name: String,
+
+        /// Specify level of call stack.
+        /// 
+        /// If not specified, print first found local
+        level: Option<u32>,
+    },
+
     /// Stub command for no-operation, does nothing
     #[default]
     Nop,
@@ -86,7 +98,7 @@ impl DebuggerFrontend {
 
     /// Send last parsed args to debugger
     pub fn do_actions(&self, dbg: &mut dbg::SqDebugger) {
-        match self.last_cmd {
+        match &self.last_cmd {
             Commands::Step => match dbg.step() {
                 Ok(e) => println!("{e}"),
                 Err(e) => println!("step failed: {e}"),
@@ -98,8 +110,8 @@ impl DebuggerFrontend {
             },
             Commands::Locals { level } => 
             if let Some(lvl) = level {
-                match dbg.get_locals(lvl) {
-                    Ok(locals) => Self::print_locals(locals, lvl),
+                match dbg.get_locals(*lvl) {
+                    Ok(locals) => Self::print_locals(locals, *lvl),
                     Err(e) => println!("failed to get locals: {e}"),
                 }
             } else {
@@ -109,6 +121,33 @@ impl DebuggerFrontend {
                     println!();
                     lvl += 1;
                 } 
+            }
+            Commands::Examine { level, name } => {
+                let mut var = None;
+                if let Some(lvl) = level {
+                    match dbg.get_locals(*lvl) {
+                        Ok(locals) => {
+                            var = locals.into_iter().find(|v| &v.name == name);
+                        },
+                        Err(e) => {
+                            println!("failed to get locals: {e}");
+                            return;
+                        },
+                    }
+                } else {
+                    let mut lvl = 1;
+                    while let Ok(locals) = dbg.get_locals(lvl) {
+                        var = locals.into_iter().find(|v| &v.name == name);
+                        if var.is_some() { break }
+                        lvl += 1;
+                    }
+                }
+
+                match var {
+                    Some(SqLocalVar { name, val }) => 
+                        println!("{name}: {typ:?} = {val:#?}", typ = val.get_type()),
+                    None => println!("local {name} not found"),
+                }
             }
 
             Commands::Nop => (),
