@@ -1040,6 +1040,43 @@ impl DynSqVar {
     }
 }
 
+impl std::fmt::Display for DynSqVar {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DynSqVar::Null => write!(f, "null"),
+            DynSqVar::Integer(i) => write!(f, "{i}"),
+            DynSqVar::Float(flt) => write!(f, "{flt}"),
+            DynSqVar::Bool(b) => write!(f, "{b}"),
+            DynSqVar::String(s) => write!(f, "\"{s}\""),
+            DynSqVar::Table(map) => {
+                write!(f, "{{")?;
+                for (key, val) in map {
+                    write!(f, "{key} <- {val}, ")?;
+                }
+                write!(f, "}}")?;
+                Ok(())
+            },
+            DynSqVar::Array(v) => { 
+                write!(f, "[")?;
+                for var in v {
+                    write!(f, "{var}, ")?;
+                }
+                write!(f, "]")?;
+                Ok(())
+            },
+            DynSqVar::UserData(u) => {
+                write!(f, "[")?;
+                for byte in &u.0 {
+                    write!(f, "0x{byte:X}, ")?;
+                }
+                write!(f, "]")?;
+                Ok(())
+            },
+            DynSqVar::Unsupported(t) => write!(f, "{t:?}<ADDR>"),
+        }
+    }
+}
+
 impl PartialEq for DynSqVar {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {

@@ -145,7 +145,7 @@ impl DebuggerFrontend {
 
                 match var {
                     Some(SqLocalVar { name, val }) => 
-                        println!("{name}: {typ:?} = {val:#?}", typ = val.get_type()),
+                        println!("{name}: {typ:?} = {val}", typ = val.get_type()),
                     None => println!("local {name} not found"),
                 }
             }
