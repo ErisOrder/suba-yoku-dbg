@@ -87,8 +87,6 @@ impl std::fmt::Display for SqStackInfo {
 
 pub type SqReleaseHook = extern "C" fn(p: SQUserPointer, size: SqInteger) -> SqInteger;
 
-pub type SqDebugHook = dyn FnMut(DebugEvent, Option<String>, &mut FriendVm) + Send;
-
 /// C SQFunction type 
 pub type SqFunction = extern "C" fn(HSQUIRRELVM) -> SqInteger;
 
@@ -497,8 +495,10 @@ where Self: Sized
     /// In order to receive a 'per line' callback, is necessary 
     /// to compile the scripts with the line informations. 
     /// Without line informations activated, only the 'call/return' callbacks will be invoked.
-    fn set_debug_hook(&mut self, mut hook: Box<SqDebugHook>) {
-
+    fn set_debug_hook<F>(&mut self, mut hook: F)
+    where
+        F: FnMut(DebugEvent, Option<String>, &mut FriendVm) + Send + 'static
+    {
         let debug_hook_glue = sq_closure!(
             #[(vm_var = "vm")]
             move |
@@ -814,7 +814,6 @@ where VM: SqPush<SqUserData> + SqVmApi
             let top = vm.stack_len();
             let closure_box: SqUserData = vm.get(top).unwrap();
 
-            // Must be safe as long as wrapper bound with VM is alive
             let closure: &mut Box<SqFnClosure> = unsafe {
                 let closure_box: usize =  std::ptr::read(closure_box.unwrap().as_ptr() as _) ;
                 &mut *(closure_box as *mut _)

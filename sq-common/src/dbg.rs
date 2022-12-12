@@ -85,7 +85,7 @@ impl SqDebugger
         let exec_state = dbg.exec_state.clone();
 
         // Attached debugger will receive messages and respond to them
-        dbg.vm.set_debug_hook(Box::new(move |e, src, vm| {
+        dbg.vm.set_debug_hook(move |e, src, vm| {
 
             // Vm was halted or step cmd was received on previous debug hook call
             // So send debug event back
@@ -143,7 +143,7 @@ impl SqDebugger
                 }
                 std::thread::sleep(Duration::from_millis(50));
             }
-        }));
+        });
 
         dbg
     }
