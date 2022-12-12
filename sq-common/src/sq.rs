@@ -85,6 +85,8 @@ impl std::fmt::Display for SqStackInfo {
     }
 }
 
+pub type SqReleaseHook = extern "C" fn(p: SQUserPointer, size: SqInteger) -> SqInteger;
+
 pub type SqDebugHook<'a> = dyn FnMut(DebugEvent, Option<String>, &mut FriendVm) + Send + 'a;
 
 /// C SQFunction type 
@@ -650,7 +652,9 @@ where Self: Sized
 
 /// Unsafe object manipulation
 #[allow(clippy::missing_safety_doc)]
-pub trait SqVmApi: SqVmErrorHandling {
+pub trait SqVmApi: SqVmErrorHandling
+where Self: Sized
+{
         /// Pushes a null value into the stack
         #[inline]
         unsafe fn push_null(&mut self) {
@@ -783,6 +787,16 @@ pub trait SqVmApi: SqVmErrorHandling {
         unsafe fn new_closure(&mut self, f: SqFunction, free_vars: SqUnsignedInteger) {
             sq_newclosure(self.handle(), Some(f), free_vars)
         }
+
+        /// Sets a `hook` that will be called before release of __userdata__ at position `idx`
+        #[inline]
+        unsafe fn set_release_hook(&mut self, idx: SqInteger, hook: SqReleaseHook) -> Result<()> {
+            if self.get_type(idx) != SqType::UserData {
+                bail!("Value at idx {idx} isn`t a userdata");
+            }
+            sq_setreleasehook(self.handle(), idx, Some(hook));
+            Ok(())
+        }
 }
 
 /// Advanced rust-wrapped operations
@@ -838,6 +852,51 @@ impl<T: SqVmErrorHandling> SqThrow<anyhow::Error> for T {
                 msg
             });
         self.throw_error(msg);
+    }
+}
+
+impl <'a, VM> SqPush<Box<SqFnClosure<'a>>> for VM
+where VM: SqPush<SqUserData> + SqVmApi
+{
+    fn push(&mut self, val: Box<SqFnClosure<'a>>) -> Result<()> {
+        let clos_box = Box::new(val); 
+
+        #[allow(clippy::borrowed_box)]
+        extern "C" fn glue(hvm: HSQUIRRELVM) -> SqInteger {
+            let mut vm = unsafe { UnsafeVm::from_handle(hvm).into_friend() };
+
+            let top = vm.stack_len();
+            let closure_box: SqUserData = vm.get(top).unwrap();
+
+            // Must be safe as long as wrapper bound with VM is alive
+            let closure: &mut Box<SqFnClosure> = unsafe {
+                let closure_box: usize =  std::ptr::read(closure_box.unwrap().as_ptr() as _) ;
+                &mut *(closure_box as *mut _)
+            };
+
+            closure(&mut vm)
+        }
+
+        extern "C" fn release_hook(ptr: SQUserPointer, _: SqInteger) -> SqInteger {
+            // Received ptr is pointer to pointer (of former box) to box
+            unsafe { 
+                let closure_box: *mut Box<SqFnClosure> = std::ptr::read(ptr as _) ;
+                let _ = Box::from_raw(closure_box);
+            };
+            1
+        }
+
+        let raw = Box::leak(clos_box) as *mut _;
+        let data: Vec<_> = (raw as usize).to_ne_bytes().into();
+
+        self.push(SqUserData::from(data)).expect("Failed to push closure box ptr");
+        unsafe { self.set_release_hook(-1, release_hook) }.expect("Failed to set box release hook");
+
+        unsafe {
+            self.new_closure(glue, 1);
+        }
+
+        Ok(())
     }
 }
 

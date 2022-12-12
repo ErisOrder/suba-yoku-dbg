@@ -337,4 +337,30 @@ fn register_test_functions(vm: &mut SafeVm) {
     
         "".into()
     } 
+
+    vm.register_function("TestPushClosure", test_push_closure);
+    #[sqfn] 
+    fn test_push_closure() -> Box<SqFnClosure<'static>> {
+        struct Indicator(i32);
+
+        impl Drop for Indicator {
+            fn drop(&mut self) {
+                debug!("Dropping Indicator: {}", self.0);
+            }
+        }
+
+        impl Indicator {
+            pub fn addx(&mut self, x: SqInteger) {
+                self.0 += x
+            }
+        }
+
+        let mut capt = Indicator(42);
+
+        sq_closure!(move |c: SqInteger| {
+            debug!("called pushed closure: {}", capt.0);
+            capt.addx(c);
+        })
+    }
+
 }
