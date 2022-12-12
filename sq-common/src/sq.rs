@@ -88,7 +88,7 @@ impl std::fmt::Display for SqStackInfo {
 pub type SqDebugHook<'a> = dyn FnMut(DebugEvent, Option<String>, &mut FriendVm) + Send + 'a;
 
 /// C SQFunction type 
-pub type SQFn = extern "C" fn(HSQUIRRELVM) -> SqInteger;
+pub type SqFunction = extern "C" fn(HSQUIRRELVM) -> SqInteger;
 
 /// Safe abstraction for SQFn
 pub type SqFnClosure<'a> = dyn FnMut(&mut FriendVm) -> SqInteger + Send + 'a; 
@@ -225,7 +225,7 @@ where
 
         #[allow(clippy::borrowed_box)]
         #[sqfn(vm_var = "vm")]
-        fn DebugHook(
+        fn debug_hook_glue(
             event_type: SqInteger,
             src_file: Option<String>,
             line: SqInteger,
@@ -259,7 +259,7 @@ where
         self.push(SqUserData::from(data)).expect("Failed to push hook closure box ptr");
 
         unsafe {
-            self.new_closure(DebugHook::sq_fn, 1);
+            self.new_closure(debug_hook_glue, 1);
             self.set_debug_hook_raw();
         }
     }
@@ -287,7 +287,7 @@ where
 
         let boxed_box = unsafe { Box::from_raw(raw) };
 
-        let old = self.native_closures.insert(name.to_string(), boxed_box);
+        self.native_closures.insert(name.to_string(), boxed_box);
 
         let data: Vec<_> = (raw as usize).to_ne_bytes().into();
 
@@ -299,11 +299,7 @@ where
             self.new_closure(glue, 1);
         }
             
-        if old.is_some() {
-            self.slot_set(-3).expect("Failed to set root table slot value");
-        } else {
-            self.new_slot(-3, false).expect("Failed to create slot in root table");
-        }
+        self.new_slot(-3, false).expect("Failed to create slot in root table");
         
         self.pop(1);
     }
@@ -350,8 +346,7 @@ impl UnsafeVm {
 
 }
 
-/// Wrapper for friend SQVM.
-/// Cannot be closed by user
+/// Wrapper for friend SQVM. Cannot be closed by user.
 pub struct FriendVm(HSQUIRRELVM);
 
 impl SqVmHandle for FriendVm {
@@ -785,9 +780,22 @@ pub trait SqVmApi: SqVmErrorHandling {
         /// Create a new native closure, pops `free_vars` values and set those
         /// as free variables of the new closure, and push the new closure in the stack
         #[inline]
-        unsafe fn new_closure(&mut self, f: SQFn, free_vars: SqUnsignedInteger) {
+        unsafe fn new_closure(&mut self, f: SqFunction, free_vars: SqUnsignedInteger) {
             sq_newclosure(self.handle(), Some(f), free_vars)
         }
+}
+
+/// Advanced rust-wrapped operations
+pub trait SqVmAdvanced<'a>: SqVmApi + SQVm + SqPush<&'a str> + SqPush<SqFunction> {
+    fn register_function(&mut self, name: &'a str, func: SqFunction) {
+        self.push_root_table();
+        self.push(name).expect("failed to push closure name");
+
+        self.push(func).expect("failed to push closure");
+
+        self.new_slot(-3, false).expect("Failed to create slot in root table");
+        self.pop(1);
+    }
 }
 
 impl SqVmErrorHandling for SafeVm<'_> {}
@@ -797,6 +805,11 @@ impl SqVmErrorHandling for FriendVm {}
 impl<T: SqVmErrorHandling> SQVm for T {}
 impl<T: SqVmErrorHandling> SqVmApi for T {}
 impl<T: SqGet<DynSqVar> + SqVmApi> SqVmDebugBasic for T {}
+
+impl<'a, T> SqVmAdvanced<'a> for T
+where 
+    T: SqVmApi + SQVm + SqPush<&'a str> + SqPush<SqFunction>
+{}
 
 pub trait SqPush<T> {
     /// Push a value to the vm stack
@@ -828,9 +841,9 @@ impl<T: SqVmErrorHandling> SqThrow<anyhow::Error> for T {
     }
 }
 
-impl<T: SqVmApi> SqPush<SQFn> for T {
+impl<T: SqVmApi> SqPush<SqFunction> for T {
     #[inline]
-    fn push(&mut self, val: SQFn) -> Result<()> {
+    fn push(&mut self, val: SqFunction) -> Result<()> {
         unsafe { self.new_closure(val, 0) }
         Ok(())
     }

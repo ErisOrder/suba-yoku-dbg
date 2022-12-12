@@ -17,8 +17,6 @@ pub struct SQFnMacroArgs {
     sq_wrap_path: Option<String>,
     #[darling(default)]
     print_args: bool,
-    #[darling(default)]
-    sqrat_method: bool,
 }
 
 #[derive(Debug, FromMeta)]
@@ -245,7 +243,6 @@ pub fn sqfn_impl(
     };
 
     let print_args = args.print_args;
-    let sqrat_method = args.sqrat_method;
 
     let imports = quote! {
         use log::debug;
@@ -316,32 +313,21 @@ pub fn sqfn_impl(
 
     match item {
         ItemSqFn::ItemFn(item) => quote! {
-            #original_vis struct #original_name;
-    
-            impl #original_name {
+            #[allow(unreachable_code, unused_mut)]
+            #original_vis extern "C" fn #original_name(
+                hvm: #sq_wrapper_mod::HSQUIRRELVM
+            ) -> #sq_wrapper_mod::SqInteger {
+                #imports
+
+                let mut #vm_ident = unsafe { UnsafeVm::from_handle(hvm).into_friend() };
+
                 #item
+
+                #sq_fn_body_start
     
-                #[allow(unreachable_code, unused_variables, unused)]
-                pub extern "C" fn sq_fn(
-                    hvm: #sq_wrapper_mod::HSQUIRRELVM
-                ) -> #sq_wrapper_mod::SqInteger {
-                    #imports
-
-                    // Cannot be closed if passed to method
-                    let mut #vm_ident = unsafe { UnsafeVm::from_handle(hvm).into_friend() };
-
-                    // pop unused userdata with method
-                    if #sqrat_method {
-
-                        #vm_ident.pop(1); 
-                    }
-
-                    #sq_fn_body_start
+                let ret = rust_fn(#( #normal_arg_idents, )* #( #varargs,)* #(&mut #vm_option)* );
     
-                    let ret = Self::rust_fn(#( #normal_arg_idents, )* #( #varargs,)* #(&mut #vm_option)* );
-    
-                    #sq_fn_body_end
-                }
+                #sq_fn_body_end
             }
         },
         ItemSqFn::Closure(mut item_clos) => {

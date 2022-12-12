@@ -8,8 +8,7 @@ use lazy_static::lazy_static;
 use util_proc_macro::{sqfn, sq_closure};
 use sq_common::*;
 
-use crate::{wrappers, sq_bind_method};
-
+use crate::wrappers;
 
 const CALL_SIZE: usize = 5;
 
@@ -26,7 +25,6 @@ const SQ_VM_INIT_HOOK_OFFSET: usize = 0x4B125;
 const SQ_VM_INIT_HOOK_SIZE: usize = 5;
 
 static mut SQVM_PTR: usize = 0;
-pub static mut VM_THREAD_ID: usize = 0;
 
 const BASE_OFFSET: usize = 0x1000 - 0x400; // DataOffset - HeaderSize
 
@@ -156,7 +154,24 @@ gen_hook! {
 }
 
 gen_hook! {
-    // need to call 
+    hook_vm_init, SQ_VM_INIT_HOOK_OFFSET, SQ_VM_INIT_HOOK_SIZE, 0x200,
+    prolog {
+        ; mov eax, fixup_addr(SQ_INIT_VM_FN_OFFSET) as _
+        ; call eax
+        ; mov DWORD [addr_of_mut!(SQVM_PTR) as _], eax
+    }
+    body {
+        ; mov eax, vm_init as _
+        ; call eax
+    }
+    inner {
+        unsafe extern "stdcall" fn vm_init() {
+            debug!(target: "vm_init_hook", "called vm_init(), sqvm ptr: {SQVM_PTR:X}");
+        }
+    }
+}
+
+gen_hook! {
     hook_bind, REG_FN_HOOK_OFFSET, REG_FN_HOOK_SIZE, 0x200,
     prolog {
         ; pop DWORD [addr_of_mut!(RET_ADDR) as _]
@@ -165,7 +180,6 @@ gen_hook! {
         ; call eax 
     }
     body {    
-        ; push DWORD fixed_bind_fn as _
         ; mov edx, DWORD bind as _
         ; call edx       
     }
@@ -177,10 +191,10 @@ gen_hook! {
         static mut SQ_TAB_PTR: usize = 0;
 
         let fixed_bind_fn = fixup_addr(SQ_BIND_FN_OFFSET);
-
-        unsafe extern "stdcall" fn bind(func_: *const u8) {
-            debug!(target: "bind_hook", "called stub, sqrat ptr: 0x{SQ_TAB_PTR:X}, sqvm ptr: {SQVM_PTR:X}");
-
+        
+        // It might be possible to move this code to vm init hook,
+        // but for some reason it isn`t working properly, maybe several vm threads involved
+        unsafe extern "stdcall" fn bind() { 
             let mut vm = UnsafeVm::from_handle(SQVM_PTR as _).into_safe();
 
             vm.register_closure("TestClos", Box::new(|_vm| {
@@ -216,133 +230,111 @@ gen_hook! {
                 }
             ));
 
+            register_test_functions(&mut vm);
+
             let dbg = dbg::SqDebugger::attach(vm);
             *SQ_DEBUGGER.lock().unwrap() = Some(dbg);
-
-            let bind_fn: crate::util::BindSQFnFn = std::mem::transmute(func_); 
-
-            
-            sq_bind_method!(bind_fn, SQ_TAB_PTR, SingleArg);
-            sq_bind_method!(bind_fn, SQ_TAB_PTR, TestFunction);
-            sq_bind_method!(bind_fn, SQ_TAB_PTR, TestArgs);
-            sq_bind_method!(bind_fn, SQ_TAB_PTR, TestString);
-            sq_bind_method!(bind_fn, SQ_TAB_PTR, TestDyn);
-            sq_bind_method!(bind_fn, SQ_TAB_PTR, TestStaticArr);
-            sq_bind_method!(bind_fn, SQ_TAB_PTR, TestVarargs);
-            sq_bind_method!(bind_fn, SQ_TAB_PTR, TestTable);
-            sq_bind_method!(bind_fn, SQ_TAB_PTR, TestUserData);
-            sq_bind_method!(bind_fn, SQ_TAB_PTR, TestCreateUserData);
-            sq_bind_method!(bind_fn, SQ_TAB_PTR, TestOption);
-
         }
     }
 }
 
-gen_hook! {
-    hook_vm_init, SQ_VM_INIT_HOOK_OFFSET, SQ_VM_INIT_HOOK_SIZE, 0x200,
-    prolog {
-        ; mov eax, fixup_addr(SQ_INIT_VM_FN_OFFSET) as _
-        ; call eax
-        ; mov DWORD [addr_of_mut!(SQVM_PTR) as _], eax
+fn register_test_functions(vm: &mut SafeVm) {
+    
+    vm.register_function("TestFunction", test_function);
+    vm.register_function("TestFunction", test_function);
+    #[sqfn]
+    fn test_function() -> SqInteger {
+        777
     }
-    body {
-        ; mov eax, get_thread as _
-        ; call eax
+
+    vm.register_function("SingleArg", single_arg);
+    #[sqfn]
+    fn single_arg(a: SqInteger) -> SqInteger {
+        a
     }
-    inner {
-        unsafe extern "stdcall" fn get_thread() {
-            let id = winapi::um::processthreadsapi::GetCurrentThreadId();
-            VM_THREAD_ID = id as _;
+
+    vm.register_function("TestArgs", test_args);
+    #[sqfn]
+    fn test_args(a1: SqInteger, a2: SqInteger) -> SqInteger {
+        a1 + a2
+    }
+    
+    vm.register_function("TestString", test_string);
+    #[sqfn]
+    fn test_string(mut s: String) -> String {
+        s.push_str(" + addition");
+        s
+    }
+    
+    vm.register_function("TestDyn", test_dyn);
+    #[sqfn]
+    fn test_dyn(d: DynSqVar) -> DynSqVar {
+        let s = match d {
+            DynSqVar::Null => "Null".into(),
+            DynSqVar::Integer(i) => format!("Integer {i}"),
+            DynSqVar::String(s) => format!("String {s}"),
+            DynSqVar::Array(a) => format!("Array {a:?}"),
+            DynSqVar::Float(f) => format!("Float {f}"),
+            DynSqVar::Bool(b) => format!("Bool {b}"),
+            DynSqVar::Table(t) => format!("Table {t:?}"),
+            DynSqVar::UserData(u) => format!("UserData {u:?}"),
+            DynSqVar::Unsupported(other) => format!("{other:?}")
+        };
+        debug!("received {s}");
+        DynSqVar::Array(vec![
+            DynSqVar::Integer(9),
+            DynSqVar::Null,
+            DynSqVar::String(String::from("Hello")),
+        ])
+    }
+    
+    vm.register_function("TestStaticArr", test_static_arr);
+    #[sqfn]
+    fn test_static_arr(a: Vec<SqInteger>) -> SqInteger {
+        a.into_iter().sum()
+    }
+    
+    vm.register_function("TestVarargs", test_varargs);
+    #[sqfn(varargs = "varargs")]
+    fn test_varargs(_norm: DynSqVar) -> SqInteger {
+        varargs.len() as _
+    }
+    
+    vm.register_function("TestTable", test_table);
+    #[sqfn]
+    fn test_table(input: HashMap<DynSqVar, DynSqVar>) -> HashMap<DynSqVar, DynSqVar> {
+        for (k, v) in input.into_iter() {
+            debug!("table {k:?}: {v:?}");
         }
+        let mut out = HashMap::new();
+        out.insert(DynSqVar::Bool(false), DynSqVar::Bool(true));
+        out.insert(DynSqVar::String("key".into()), DynSqVar::String("val".into()));
+        out.insert(DynSqVar::Integer(2), DynSqVar::Integer(4));
+        out.insert(DynSqVar::Array(vec![]), DynSqVar::Array(vec![]));
+        out
     }
-}
-
-
-#[sqfn(sqrat_method = true)]
-fn TestFunction() -> SqInteger {
-    777
-}
-
-
-#[sqfn(sqrat_method = true)]
-fn SingleArg(a: SqInteger) -> SqInteger {
-    a
-}
-
-
-#[sqfn(sqrat_method = true)]
-fn TestArgs(a1: SqInteger, a2: SqInteger) -> SqInteger {
-    a1 + a2
-}
-
-#[sqfn(sqrat_method = true)]
-fn TestString(mut s: String) -> String {
-    s.push_str(" + addition");
-    s
-}
-
-#[sqfn(sqrat_method = true)]
-fn TestDyn(d: DynSqVar) -> DynSqVar {
-    let s = match d {
-        DynSqVar::Null => "Null".into(),
-        DynSqVar::Integer(i) => format!("Integer {i}"),
-        DynSqVar::String(s) => format!("String {s}"),
-        DynSqVar::Array(a) => format!("Array {a:?}"),
-        DynSqVar::Float(f) => format!("Float {f}"),
-        DynSqVar::Bool(b) => format!("Bool {b}"),
-        DynSqVar::Table(t) => format!("Table {t:?}"),
-        DynSqVar::UserData(u) => format!("UserData {u:?}"),
-        DynSqVar::Unsupported(other) => format!("{other:?}")
-    };
-    debug!("received {s}");
-    DynSqVar::Array(vec![
-        DynSqVar::Integer(9),
-        DynSqVar::Null,
-        DynSqVar::String(String::from("Hello")),
-    ])
-}
-
-#[sqfn(sqrat_method = true)]
-fn TestStaticArr(a: Vec<SqInteger>) -> SqInteger {
-    a.into_iter().sum()
-}
-
-#[sqfn(varargs = "varargs", sqrat_method = true)]
-fn TestVarargs(_norm: DynSqVar) -> SqInteger {
-    varargs.len() as _
-}
-
-#[sqfn(sqrat_method = true)]
-fn TestTable(input: HashMap<DynSqVar, DynSqVar>) -> HashMap<DynSqVar, DynSqVar> {
-    for (k, v) in input.into_iter() {
-        debug!("table {k:?}: {v:?}");
+    
+    vm.register_function("TestCreateUserData", test_create_userdata);
+    #[sqfn]
+    fn test_create_userdata() -> SqUserData {
+        "magic_string".to_string().into_bytes().into()
     }
-    let mut out = HashMap::new();
-    out.insert(DynSqVar::Bool(false), DynSqVar::Bool(true));
-    out.insert(DynSqVar::String("key".into()), DynSqVar::String("val".into()));
-    out.insert(DynSqVar::Integer(2), DynSqVar::Integer(4));
-    out.insert(DynSqVar::Array(vec![]), DynSqVar::Array(vec![]));
-    out
-}
-
-
-#[sqfn(sqrat_method = true)]
-fn TestCreateUserData() -> SqUserData {
-    "magic_string".to_string().into_bytes().into()
-}
-
-#[sqfn(sqrat_method = true)]
-fn TestUserData(inp: SqUserData) -> SqUserData {
-    debug!("Received userdata: {inp:?}");
-    inp
-}
-
-#[sqfn(sqrat_method = true)]
-fn TestOption(s: Option<String>) -> String {
-    match s {
-        Some(s) => debug!("Received {s}"),
-        None => debug!("Received null"),
+    
+    vm.register_function("TestUserData", test_userdata);
+    #[sqfn]
+    fn test_userdata(inp: SqUserData) -> SqUserData {
+        debug!("Received userdata: {inp:?}");
+        inp
     }
-
-    "".into()
-} 
+    
+    vm.register_function("TestOption", test_option);
+    #[sqfn]
+    fn test_option(s: Option<String>) -> String {
+        match s {
+            Some(s) => debug!("Received {s}"),
+            None => debug!("Received null"),
+        }
+    
+        "".into()
+    } 
+}
