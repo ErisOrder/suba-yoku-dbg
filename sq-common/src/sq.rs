@@ -1,6 +1,6 @@
 use anyhow::{bail, Context};
 use squirrel2_kaleido_rs::*;
-use util_proc_macro::{sqfn, set_sqfn_paths};
+use util_proc_macro::{set_sqfn_paths, sq_closure};
 use std::{ptr::addr_of_mut, cmp::Ordering, collections::HashMap, hash::Hash};
 use anyhow::{
     Result,
@@ -87,13 +87,13 @@ impl std::fmt::Display for SqStackInfo {
 
 pub type SqReleaseHook = extern "C" fn(p: SQUserPointer, size: SqInteger) -> SqInteger;
 
-pub type SqDebugHook<'a> = dyn FnMut(DebugEvent, Option<String>, &mut FriendVm) + Send + 'a;
+pub type SqDebugHook = dyn FnMut(DebugEvent, Option<String>, &mut FriendVm) + Send;
 
 /// C SQFunction type 
 pub type SqFunction = extern "C" fn(HSQUIRRELVM) -> SqInteger;
 
 /// Safe abstraction for SQFn
-pub type SqFnClosure<'a> = dyn FnMut(&mut FriendVm) -> SqInteger + Send + 'a; 
+pub type SqFnClosure = dyn FnMut(&mut FriendVm) -> SqInteger + Send; 
 
 /// For naming consistency
 pub type SqInteger = SQInteger;
@@ -182,130 +182,33 @@ pub trait SqVmHandle {
 
 /// Safe wrapper around SQVM handle.
 /// Will be closed on drop 
-pub struct SafeVm<'a> {
+pub struct SafeVm {
     handle: HSQUIRRELVM,
-    debug_hook: Option<Box<Box<SqDebugHook<'a>>>>,
-    native_closures: HashMap<String, Box<Box<SqFnClosure<'a>>>>
 }
 
-unsafe impl Send for SafeVm<'_> {}
+unsafe impl Send for SafeVm {}
 
-impl SqVmHandle for SafeVm<'_> {
+impl SqVmHandle for SafeVm {
     #[inline]
     unsafe fn handle(&mut self) -> HSQUIRRELVM {
         self.handle
     }
 }
 
-impl Drop for SafeVm<'_> {
+impl Drop for SafeVm {
     fn drop(&mut self) {
         unsafe { sq_close(self.handle) }
     }
 }
 
-impl<'a, 'b> SafeVm<'a>
-where
-    'a: 'b
-{
+impl SafeVm {
     /// Creates a new instance of a squirrel VM that consists in a new execution stack.
     pub fn open(initial_stack_size: SqInteger) -> Self {
         let handle = unsafe {
              sq_open(initial_stack_size)
         };
-        Self { handle, debug_hook: None, native_closures: HashMap::new() }
+        Self { handle }
     }
-
-    
-    /// Set VM debug hook that will be called for each line and function call/return
-    /// 
-    /// In order to receive a 'per line' callback, is necessary 
-    /// to compile the scripts with the line informations. 
-    /// Without line informations activated, only the 'call/return' callbacks will be invoked.
-    pub fn set_debug_hook(&'b mut self, hook: Box<SqDebugHook<'a>>) {
-        // Indirection to make fat pointer usable through FFI
-        let hook_box = Box::new(hook); 
-
-        #[allow(clippy::borrowed_box)]
-        #[sqfn(vm_var = "vm")]
-        fn debug_hook_glue(
-            event_type: SqInteger,
-            src_file: Option<String>,
-            line: SqInteger,
-            funcname: Option<String>,
-            closure_box: SqUserData, // "captured"
-        ) {
-            let line_opt = if line > 0 { Some(line) } else { None };
-
-            let event = match char::from_u32(event_type as u32).unwrap() {
-                'l' => DebugEvent::Line(line),
-                'c' => DebugEvent::FnCall(funcname.unwrap_or_else(|| "??".into()), line_opt),
-                'r' => DebugEvent::FnRet(funcname.unwrap_or_else(|| "??".into()), line_opt),
-                e => panic!("unknown debug event: {e}"),
-            };
-
-            // Must be safe as long as wrapper bound with VM is alive
-            let hook: &mut Box<SqDebugHook> = unsafe {
-                let closure_box: usize =  std::ptr::read(closure_box.unwrap().as_ptr() as _) ;
-                &mut *(closure_box as *mut _)
-            };
-
-            hook(event, src_file, vm);
-        }
-
-        let raw = Box::leak(hook_box) as *mut _;
-        
-        // Just to drop it if hook reassigned
-        self.debug_hook = Some(unsafe { Box::from_raw(raw) });
-
-        let data: Vec<_> = (raw as usize).to_ne_bytes().into();
-        self.push(SqUserData::from(data)).expect("Failed to push hook closure box ptr");
-
-        unsafe {
-            self.new_closure(debug_hook_glue, 1);
-            self.set_debug_hook_raw();
-        }
-    }
-    
-    pub fn register_closure(&'b mut self, name: &str, closure: Box<SqFnClosure<'a>>) {
-        let clos_box = Box::new(closure); 
-
-        #[allow(clippy::borrowed_box)]
-        extern "C" fn glue(hvm: HSQUIRRELVM) -> SqInteger {
-            let mut vm = unsafe { UnsafeVm::from_handle(hvm).into_friend() };
-
-            let top = vm.stack_len();
-            let closure_box: SqUserData = vm.get(top).unwrap();
-
-            // Must be safe as long as wrapper bound with VM is alive
-            let closure: &mut Box<SqFnClosure> = unsafe {
-                let closure_box: usize =  std::ptr::read(closure_box.unwrap().as_ptr() as _) ;
-                &mut *(closure_box as *mut _)
-            };
-
-            closure(&mut vm)
-        }
-
-        let raw = Box::leak(clos_box) as *mut _;
-
-        let boxed_box = unsafe { Box::from_raw(raw) };
-
-        self.native_closures.insert(name.to_string(), boxed_box);
-
-        let data: Vec<_> = (raw as usize).to_ne_bytes().into();
-
-        self.push_root_table();
-        self.push(name).expect("failed to push closure name");
-        self.push(SqUserData::from(data)).expect("Failed to push closure box ptr");
-        
-        unsafe {
-            self.new_closure(glue, 1);
-        }
-            
-        self.new_slot(-3, false).expect("Failed to create slot in root table");
-        
-        self.pop(1);
-    }
-
 }
 
 /// Wrapper for manipulating foreign VMs
@@ -335,8 +238,8 @@ impl UnsafeVm {
 
     /// Transform into Safe VM.
     /// Safe Vm will be closed on drop
-    pub fn into_safe(self) -> SafeVm<'static> {
-        SafeVm { handle: self.0, debug_hook: None, native_closures: HashMap::new() }
+    pub fn into_safe(self) -> SafeVm {
+        SafeVm { handle: self.0 }
     }
 
     /// Transform into Friend VM.
@@ -586,10 +489,44 @@ pub struct SqLocalVar {
 
 
 /// Basic debug api methods
-pub trait SqVmDebugBasic: SqVmApi + SqGet<DynSqVar>
+pub trait SqVmDebugBasic: SqVmApi + SqGet<DynSqVar> + SqPush<Box<SqFnClosure>>
 where Self: Sized
 {
-    
+    /// Set VM debug hook that will be called for each line and function call/return
+    /// 
+    /// In order to receive a 'per line' callback, is necessary 
+    /// to compile the scripts with the line informations. 
+    /// Without line informations activated, only the 'call/return' callbacks will be invoked.
+    fn set_debug_hook(&mut self, mut hook: Box<SqDebugHook>) {
+
+        let debug_hook_glue = sq_closure!(
+            #[(vm_var = "vm")]
+            move |
+            event_type: SqInteger,
+            src_file: Option<String>,
+            line: SqInteger,
+            funcname: Option<String>
+            | {
+                let line_opt = if line > 0 { Some(line) } else { None };
+
+                let event = match char::from_u32(event_type as u32).unwrap() {
+                    'l' => DebugEvent::Line(line),
+                    'c' => DebugEvent::FnCall(funcname.unwrap_or_else(|| "??".into()), line_opt),
+                    'r' => DebugEvent::FnRet(funcname.unwrap_or_else(|| "??".into()), line_opt),
+                    e => panic!("unknown debug event: {e}"),
+                };
+
+                hook(event, src_file, vm);
+            }
+        );
+
+        self.push(debug_hook_glue).expect("Failed to push debug hook closure");
+
+        unsafe {
+            self.set_debug_hook_raw();
+        }
+    }
+
     /// The member 'func_id' of the returned SqFunctionInfo structure is a
     /// unique identifier of the function; this can be useful to identify
     /// a specific piece of squirrel code in an application like for instance a profiler.
@@ -801,18 +738,26 @@ where Self: Sized
 
 /// Advanced rust-wrapped operations
 pub trait SqVmAdvanced<'a>: SqVmApi + SQVm + SqPush<&'a str> + SqPush<SqFunction> {
+    /// Bind rust native function to root table of SQVM
     fn register_function(&mut self, name: &'a str, func: SqFunction) {
         self.push_root_table();
+        self.push(name).expect("Failed to push closure name");
+        self.push(func).expect("Failed to push function");
+        self.new_slot(-3, false).expect("Failed to create slot in root table");
+        self.pop(1);
+    }
+
+    /// Bind rust native closure to root table of SQVM 
+    fn register_closure(&mut self, name: &'a str, closure: Box<SqFnClosure>) {
+        self.push_root_table();
         self.push(name).expect("failed to push closure name");
-
-        self.push(func).expect("failed to push closure");
-
+        self.push(closure).expect("Failed to push closure");
         self.new_slot(-3, false).expect("Failed to create slot in root table");
         self.pop(1);
     }
 }
 
-impl SqVmErrorHandling for SafeVm<'_> {}
+impl SqVmErrorHandling for SafeVm {}
 impl SqVmErrorHandling for UnsafeVm {}
 impl SqVmErrorHandling for FriendVm {}
 
@@ -855,10 +800,11 @@ impl<T: SqVmErrorHandling> SqThrow<anyhow::Error> for T {
     }
 }
 
-impl <'a, VM> SqPush<Box<SqFnClosure<'a>>> for VM
+impl<VM> SqPush<Box<SqFnClosure>> for VM
 where VM: SqPush<SqUserData> + SqVmApi
 {
-    fn push(&mut self, val: Box<SqFnClosure<'a>>) -> Result<()> {
+    fn push(&mut self, val: Box<SqFnClosure>) -> Result<()> {
+        // Indirection to make fat pointer usable through FFI
         let clos_box = Box::new(val); 
 
         #[allow(clippy::borrowed_box)]

@@ -58,19 +58,19 @@ pub enum DebugResp {
     Locals(Option<Vec<SqLocalVarWithLvl>>)
 }
 
-pub struct SqDebugger<'a>{
+pub struct SqDebugger{
     exec_state: Arc<Atomic<ExecState>>,
     sender: mpsc::Sender<DebugMsg>,
     receiver: mpsc::Receiver<DebugResp>,
-    vm: SafeVm<'a>,
+    vm: SafeVm,
 }
 
 
 
-impl<'a> SqDebugger<'a>
+impl SqDebugger
 {
     /// Attach debugger to SQVM through setting debug hook.
-    pub fn attach(vm: SafeVm<'a>) -> SqDebugger<'a> {
+    pub fn attach(vm: SafeVm) -> SqDebugger {
 
         let (tx, rx) = mpsc::channel();
         let (resp_tx, resp_rx) = mpsc::sync_channel(0);

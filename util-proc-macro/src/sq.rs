@@ -192,7 +192,6 @@ pub fn sqfn_impl(
         Some(s) => {
             let ident = Ident::new(&s, Span::call_site());
             let arg = quote!{ mut #ident: Vec<#sq_wrapper_mod::DynSqVar> }.into();
-
             let arg = parse_macro_input!( arg as FnArg );
 
             match &mut item {
@@ -224,16 +223,15 @@ pub fn sqfn_impl(
     let (vm_ident, vm_option) = match args.vm_var {
         Some(s) => {
             let ident = Ident::new(&s, Span::call_site());
-
             let arg = quote!{ #ident: &mut #sq_wrapper_mod::FriendVm }.into();
+            let arg = parse_macro_input!( arg as FnArg );
 
             match &mut item {
-                ItemSqFn::ItemFn(item) => item.sig.inputs.push(
-                    parse_macro_input!( arg as FnArg )
-                ),
-                ItemSqFn::Closure(item) => item.inputs.push(
-                    parse_macro_input!( arg as Pat )
-                ),
+                ItemSqFn::ItemFn(item) => item.sig.inputs.push(arg),
+                ItemSqFn::Closure(item) => {
+                    let FnArg::Typed(a) = arg else { unreachable!() };
+                    item.inputs.push(Pat::Type(a));
+                }
             };
 
             let i = ident.clone();
@@ -345,7 +343,7 @@ pub fn sqfn_impl(
 
                     let mut inner = #item_clos;
 
-                    let ret = inner(#( #normal_arg_idents, )* #( #varargs,)* #(&mut #vm_option)* );
+                    let ret = inner(#( #normal_arg_idents, )* #( #varargs,)* #(#vm_option)* );
 
                     #sq_fn_body_end
                 })

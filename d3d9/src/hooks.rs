@@ -340,7 +340,7 @@ fn register_test_functions(vm: &mut SafeVm) {
 
     vm.register_function("TestPushClosure", test_push_closure);
     #[sqfn] 
-    fn test_push_closure() -> Box<SqFnClosure<'static>> {
+    fn test_push_closure() -> Box<SqFnClosure> {
         struct Indicator(i32);
 
         impl Drop for Indicator {
