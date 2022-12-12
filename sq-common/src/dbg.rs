@@ -1,5 +1,6 @@
-use std::{time::Duration, sync::{Arc, Mutex, mpsc}};
+use std::{time::Duration, sync::{Arc, mpsc}};
 use anyhow::{Result, bail};
+use atomic::{Atomic, Ordering};
 use crate::sq::*;
 
 const RECV_TIMEOUT: Duration = Duration::from_secs(10);
@@ -13,13 +14,20 @@ pub enum ExecState {
 pub enum DebugMsg {
     Step,
     Backtrace,
-    Locals(SqUnsignedInteger)
+    Locals(Option<SqUnsignedInteger>)
 }
 
 #[derive(Clone, PartialEq, PartialOrd, Eq, Ord, Debug, Hash)]
 pub struct EventWithSrc {
-    event: DebugEvent,
-    src: Option<String>
+    pub event: DebugEvent,
+    pub src: Option<String>
+}
+
+/// SqLocalVar annotated with level
+#[derive(Clone, PartialEq, PartialOrd, Eq, Debug, Hash)]
+pub struct SqLocalVarWithLvl {
+    pub var: SqLocalVar,
+    pub lvl: SqUnsignedInteger,
 }
 
 impl std::fmt::Display for EventWithSrc {
@@ -47,15 +55,16 @@ pub type SqBacktrace = Vec<SqStackInfo>;
 pub enum DebugResp {
     Event(EventWithSrc),
     Backtrace(SqBacktrace),
-    Locals(Option<Vec<SqLocalVar>>)
+    Locals(Option<Vec<SqLocalVarWithLvl>>)
 }
 
 pub struct SqDebugger<'a>{
-    exec_state: Arc<Mutex<ExecState>>,
+    exec_state: Arc<Atomic<ExecState>>,
     sender: mpsc::Sender<DebugMsg>,
     receiver: mpsc::Receiver<DebugResp>,
     vm: SafeVm<'a>,
 }
+
 
 
 impl<'a> SqDebugger<'a>
@@ -67,7 +76,7 @@ impl<'a> SqDebugger<'a>
         let (resp_tx, resp_rx) = mpsc::sync_channel(0);
 
         let mut dbg = Self {
-            exec_state: Arc::new(Mutex::new(ExecState::Halted)),
+            exec_state: Arc::new(Atomic::new(ExecState::Halted)),
             sender: tx,
             receiver: resp_rx,
             vm,
@@ -81,7 +90,7 @@ impl<'a> SqDebugger<'a>
             // Vm was halted or step cmd was received on previous debug hook call
             // So send debug event back
             // This will block until msg isn`t received
-            if *exec_state.lock().unwrap() == ExecState::Halted {
+            if exec_state.load(Ordering::Relaxed) == ExecState::Halted {
                 resp_tx.send(DebugResp::Event(EventWithSrc {
                     event: e,
                     src
@@ -102,18 +111,34 @@ impl<'a> SqDebugger<'a>
                         }
                         resp_tx.send(DebugResp::Backtrace(bt)).unwrap();
                     },
-                    DebugMsg::Locals(lvl) => {
+                    DebugMsg::Locals(lvl_opt) => {
                         let mut v = vec![];
-                        let mut idx = 0;
-                        while let Ok(loc) = vm.get_local(lvl, idx) {
-                            v.push(loc);
-                            idx += 1;
+
+                        // Store all locals if level isn`t specified  
+                        let mut lvl = if let Some(lvl) = lvl_opt { lvl } else { 1 };
+
+                        // Try to get zeroth local
+                        while let Ok(loc) = vm.get_local(lvl, 0) {
+                            v.push(SqLocalVarWithLvl { var: loc, lvl });
+
+                            let mut idx = 1;
+                            while let Ok(loc) = vm.get_local(lvl, idx) {
+                                v.push(SqLocalVarWithLvl { var: loc, lvl });
+                                idx += 1;
+                            }
+
+                            if lvl_opt.is_some() {
+                                break;
+                            } else {
+                                lvl += 1;
+                            }
                         }
+
                         resp_tx.send(DebugResp::Locals(if v.is_empty() { None } else { Some(v) })).unwrap();
                     },
                 }}
 
-                if *exec_state.lock().unwrap() == ExecState::Running {
+                if exec_state.load(Ordering::Relaxed) == ExecState::Running {
                     break;
                 }
                 std::thread::sleep(Duration::from_millis(50));
@@ -125,7 +150,7 @@ impl<'a> SqDebugger<'a>
 
     /// Resume execution
     pub fn resume(&self) {
-        *self.exec_state.lock().unwrap() = ExecState::Running;
+        self.exec_state.store(ExecState::Running, Ordering::Relaxed);
     }
 
     /// Get internal message receiver
@@ -139,12 +164,7 @@ impl<'a> SqDebugger<'a>
     /// 
     /// Returns last received event if `no_recv` is `false`
     pub fn halt(&self, no_recv: bool) -> Result<Option<EventWithSrc>> {
-        let prev = {
-            let mut state = self.exec_state.lock().unwrap();
-            let prev = *state;
-            *state = ExecState::Halted;
-            prev
-        };
+        let prev = self.exec_state.swap(ExecState::Halted, Ordering::Relaxed);
         
         if prev == ExecState::Running && !no_recv {
             match self.receiver.recv_timeout(RECV_TIMEOUT) {
@@ -170,13 +190,18 @@ impl<'a> SqDebugger<'a>
     /// Get local variables and their values at specified level.
     /// 
     /// May be pretty expensive
-    pub fn get_locals(&self, lvl: SqUnsignedInteger) -> Result<Vec<SqLocalVar>> {
+    /// 
+    /// If `lvl` is `None`, return locals gathered from all levels
+    pub fn get_locals(&self, lvl: Option<SqUnsignedInteger>) -> Result<Vec<SqLocalVarWithLvl>> {
         self.sender.send(DebugMsg::Locals(lvl))?;
         match self.receiver.recv_timeout(RECV_TIMEOUT) {
             Ok(DebugResp::Locals(loc)) => 
                 if let Some(loc) = loc {
                     Ok(loc)
-                } else { bail!("no locals at level {lvl}") },
+                } else { match lvl {
+                    Some(lvl) => bail!("no locals at level {lvl}"),
+                    None => bail!("no locals at all levels"),
+                }},
             Ok(r) => bail!("{r:?}: expected locals"),
             Err(e) => bail!("{e}")
         }
@@ -198,6 +223,6 @@ impl<'a> SqDebugger<'a>
     }
 
     pub fn exec_state(&self) -> ExecState {
-        *self.exec_state.lock().unwrap()
+        self.exec_state.load(Ordering::Relaxed)
     }
 }

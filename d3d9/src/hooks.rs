@@ -1,4 +1,4 @@
-use std::{sync::Mutex, ptr::addr_of_mut};
+use std::{sync::Mutex, ptr::addr_of_mut, sync::atomic::{self, AtomicBool}};
 use std::collections::HashMap;
 use dynasmrt::{dynasm, DynasmApi, AssemblyOffset};
 use log::debug;
@@ -37,7 +37,7 @@ lazy_static! {
 
 pub static SQ_DEBUGGER: Mutex<Option<dbg::SqDebugger>> = Mutex::new(None); 
 
-pub static PRINTF_HOOK_ACTIVE: Mutex<bool> = Mutex::new(true);
+pub static PRINTF_HOOK_ACTIVE: AtomicBool = AtomicBool::new(true);
 
 pub fn fixup_addr(offset: usize) -> usize {
     *BASE_ADDR + offset + BASE_OFFSET
@@ -141,7 +141,7 @@ gen_hook! {
     }
     inner {
         unsafe extern "stdcall" fn _print(s: *mut u8) {
-            if matches!(PRINTF_HOOK_ACTIVE.lock(), Ok(b) if *b) {
+            if PRINTF_HOOK_ACTIVE.load(atomic::Ordering::Relaxed) {
                 let len = libc::strlen(s as *const std::ffi::c_char);
                 let sl = std::slice::from_raw_parts(s, len);
                 

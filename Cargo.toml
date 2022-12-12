@@ -12,7 +12,7 @@ anyhow = "1.0.66"
 libc = "0.2.137"
 pretty_env_logger = "0.4.0"
 log = "0.4.17"
-
+atomic = "0.5"
 
 [profile.release]
 panic = "abort"

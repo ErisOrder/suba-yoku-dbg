@@ -24,6 +24,7 @@ anyhow = { workspace = true }
 libc = { workspace = true }
 pretty_env_logger = { workspace = true }
 log = { workspace = true }
+atomic = { workspace = true }
 squirrel2-kaleido-rs = { workspace = true }
 sq-common = { workspace = true }
 util-proc-macro = { workspace = true }

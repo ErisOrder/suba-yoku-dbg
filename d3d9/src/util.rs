@@ -1,6 +1,33 @@
-use sq_common::*;
+use sq_common::{*, dbg::SqLocalVarWithLvl};
+use std::sync::atomic;
 use clap::{Subcommand, Command, FromArgMatches};
 use anyhow::Result;
+use crate::hooks;
+
+#[derive(clap::ValueEnum, Copy, Clone, Debug)]
+enum BoolVal {
+    True,
+    False,
+}
+
+impl From<BoolVal> for bool {
+    fn from(value: BoolVal) -> Self {
+        match value {
+            BoolVal::True => true,
+            BoolVal::False => false,
+        }
+    }
+}
+
+#[derive(Subcommand, Debug)]
+enum SetCommands {
+    /// Activate or deactivate printf hook of sqvm
+    PrintfHook {
+        #[arg(value_enum)]
+        active: BoolVal,
+    }
+}
+
 /// CLI Frontend commands
 #[derive(Subcommand, Debug, Default)]
 enum Commands {
@@ -31,10 +58,15 @@ enum Commands {
         name: String,
 
         /// Specify level of call stack.
-        /// 
+        ///
         /// If not specified, print first found local
         level: Option<u32>,
     },
+
+
+    /// Set values of different debugging variables
+    #[command(subcommand)]
+    Set(SetCommands),
 
     /// Stub command for no-operation, does nothing
     #[default]
@@ -58,10 +90,16 @@ impl DebuggerFrontend {
         }
     }
 
-    fn print_locals(locals: Vec<SqLocalVar>, lvl: u32) {
-        println!("Level {lvl} locals:");
-        for SqLocalVar { name, val } in locals {
+    fn print_locals(locals: Vec<SqLocalVarWithLvl>) {
+        let mut curr_lvl = 0; // Non-existent
+        for SqLocalVarWithLvl { var: SqLocalVar { name, val }, lvl } in locals {
+            if lvl != curr_lvl {
+                println!("\nLevel {lvl} locals:");
+                curr_lvl = lvl;
+            }
+
             print!("{name}: {:?}", val.get_type());
+            
             match val {
                 DynSqVar::Integer(i) => println!(" = {i}"),
                 DynSqVar::Float(f) => println!(" = {f}"),
@@ -88,6 +126,26 @@ impl DebuggerFrontend {
                 .help_template(PARSER_TEMPLATE)
         )
     }
+
+    fn set_var(var: &SetCommands) {
+        match var {
+            SetCommands::PrintfHook { active }
+                => hooks::PRINTF_HOOK_ACTIVE.store((*active).into(), atomic::Ordering::Relaxed),
+        }
+    }
+
+    fn examine(dbg: &dbg::SqDebugger, name: &str, level: Option<SqUnsignedInteger>) {
+        match dbg.get_locals(level) {
+            Ok(locs) => match locs.into_iter().find(|v| v.var.name == name) {
+                Some(SqLocalVarWithLvl { var: SqLocalVar { name, val }, ..}) =>
+                    println!("{name}: {typ:?} = {val}", typ = val.get_type()),
+                None => println!("local {name} not found"),
+            },
+            Err(e) => {
+                println!("failed to get locals: {e}");
+            },
+        }
+    }
 }
 
 /// Public methods
@@ -108,48 +166,13 @@ impl DebuggerFrontend {
                 Ok(bt) => Self::print_backtrace(bt),
                 Err(e) => println!("failed to get backtrace: {e}"),
             },
-            Commands::Locals { level } => 
-            if let Some(lvl) = level {
-                match dbg.get_locals(*lvl) {
-                    Ok(locals) => Self::print_locals(locals, *lvl),
-                    Err(e) => println!("failed to get locals: {e}"),
-                }
-            } else {
-                let mut lvl = 1;
-                while let Ok(locals) = dbg.get_locals(lvl) {
-                    Self::print_locals(locals, lvl);
-                    println!();
-                    lvl += 1;
-                } 
+            Commands::Locals { level } =>
+            match dbg.get_locals(*level) {
+                Ok(locals) => Self::print_locals(locals),
+                Err(e) => println!("failed to get locals: {e}"),
             }
-            Commands::Examine { level, name } => {
-                let mut var = None;
-                if let Some(lvl) = level {
-                    match dbg.get_locals(*lvl) {
-                        Ok(locals) => {
-                            var = locals.into_iter().find(|v| &v.name == name);
-                        },
-                        Err(e) => {
-                            println!("failed to get locals: {e}");
-                            return;
-                        },
-                    }
-                } else {
-                    let mut lvl = 1;
-                    while let Ok(locals) = dbg.get_locals(lvl) {
-                        var = locals.into_iter().find(|v| &v.name == name);
-                        if var.is_some() { break }
-                        lvl += 1;
-                    }
-                }
-
-                match var {
-                    Some(SqLocalVar { name, val }) => 
-                        println!("{name}: {typ:?} = {val}", typ = val.get_type()),
-                    None => println!("local {name} not found"),
-                }
-            }
-
+            Commands::Examine { level, name } => Self::examine(dbg, name, *level),
+            Commands::Set(var) => Self::set_var(var),
             Commands::Nop => (),
             Commands::Exit => std::process::exit(0),
         }
