@@ -322,13 +322,13 @@ pub fn sqfn_impl(
                 #item
     
                 #[allow(unreachable_code, unused_variables, unused)]
-                pub unsafe extern "C" fn sq_fn(
+                pub extern "C" fn sq_fn(
                     hvm: #sq_wrapper_mod::HSQUIRRELVM
                 ) -> #sq_wrapper_mod::SqInteger {
                     #imports
 
                     // Cannot be closed if passed to method
-                    let mut #vm_ident = UnsafeVm::from_handle(hvm).into_friend();
+                    let mut #vm_ident = unsafe { UnsafeVm::from_handle(hvm).into_friend() };
 
                     // pop unused userdata with method
                     if #sqrat_method {
