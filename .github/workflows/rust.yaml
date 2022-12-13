@@ -34,3 +34,8 @@ jobs:
         args: --release --target i686-pc-windows-msvc
         # Use cross instead of cargo
         use-cross: false
+    - uses: actions/upload-artifact@v3
+      with:
+        name: d3d9.dll
+        path: target/i686-pc-windows-msvc/release/d3d9.dll
+    - uses: Swatinem/rust-cache@v2
