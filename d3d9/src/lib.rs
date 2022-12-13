@@ -114,8 +114,13 @@ fn dll_init() {
             let Some(ref mut dbg) = *hooks::SQ_DEBUGGER.lock().unwrap()
             else { continue };
 
-            // Flush any stored command
-            dbg.receiver().try_recv().ok();
+            // Print out messages, if vm reached breakpoint
+            if let Ok(dbg::DebugResp::Event(e, Some(bp))) = 
+                dbg.receiver().try_recv() 
+            {
+                println!("Reached debugger breakpoint {}", bp.number);
+                println!("{e}");
+            }
     
             if let dbg::ExecState::Halted = dbg.exec_state() {
                 std::io::stdin().read_line(&mut arg_str).unwrap();

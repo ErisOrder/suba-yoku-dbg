@@ -222,10 +222,10 @@ gen_hook! {
                     std::thread::spawn(|| {
                         let Some(ref mut dbg) = *SQ_DEBUGGER.lock().unwrap()
                         else { return };
-                        let dbg::DebugResp::Event(e) = 
+                        let dbg::DebugResp::Event(e, _) = 
                             dbg.receiver().recv_timeout(std::time::Duration::from_millis(500)).unwrap()
                         else { panic!("expected event") };
-                        println!("Reached breakpoint:\n{e}");
+                        println!("Reached native breakpoint:\n{e}");
                     });
                 }
             ));

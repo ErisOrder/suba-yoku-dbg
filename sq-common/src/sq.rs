@@ -113,6 +113,12 @@ pub enum DebugEvent {
     FnRet(String, Option<SqInteger>),
 }
 
+/// DebugEvent bundled with source path
+#[derive(Clone, PartialEq, PartialOrd, Eq, Ord, Debug, Hash)]
+pub struct DebugEventWithSrc {
+    pub event: DebugEvent,
+    pub src: Option<String>
+}
 
 /// Rust-adapted SQObjectType enum
 #[derive(Copy, Clone, PartialEq, PartialOrd, Eq, Ord, Debug, Hash)]
@@ -497,13 +503,13 @@ where Self: Sized
     /// Without line informations activated, only the 'call/return' callbacks will be invoked.
     fn set_debug_hook<F>(&mut self, mut hook: F)
     where
-        F: FnMut(DebugEvent, Option<String>, &mut FriendVm) + Send + 'static
+        F: FnMut(DebugEventWithSrc, &mut FriendVm) + Send + 'static
     {
         let debug_hook_glue = sq_closure!(
             #[(vm_var = "vm")]
             move |
             event_type: SqInteger,
-            src_file: Option<String>,
+            src: Option<String>,
             line: SqInteger,
             funcname: Option<String>
             | {
@@ -516,7 +522,7 @@ where Self: Sized
                     e => panic!("unknown debug event: {e}"),
                 };
 
-                hook(event, src_file, vm);
+                hook(DebugEventWithSrc { event, src }, vm);
             }
         );
 
