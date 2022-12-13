@@ -1,7 +1,7 @@
 use anyhow::{bail, Context};
 use squirrel2_kaleido_rs::*;
 use util_proc_macro::{set_sqfn_paths, sq_closure};
-use std::{ptr::addr_of_mut, cmp::Ordering, collections::HashMap, hash::Hash};
+use std::{ptr::addr_of_mut, cmp::Ordering, collections::HashMap, hash::Hash, fmt::Write};
 use anyhow::{
     Result,
     anyhow
@@ -917,14 +917,15 @@ impl<T: SqVmApi> SqGet<SqNull> for T {
 
 impl<VM, T> SqPush<Vec<T>> for VM
 where 
-    VM: SqPush<T> + SqVmApi
+    VM: SqPush<T> + SqPush<SqInteger> + SqVmApi
 {
     fn push(&mut self, val: Vec<T>) -> Result<()> {
         self.new_array(val.len());
 
         for (index, elem) in val.into_iter().enumerate() {
+            self.push(index as SqInteger).context("Failed to push index to stack")?;
             self.push(elem).context("Failed to push element to stack")?;
-            self.array_append(-2)
+            self.slot_set(-3)
                 .context(format!("Failed to append element at index {index}"))?;
         }
         Ok(())
@@ -1115,10 +1116,18 @@ impl DynSqVar {
             DynSqVar::Unsupported(t) => *t,
         }
     }
-}
 
-impl std::fmt::Display for DynSqVar {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn write_spaces(f: &mut std::fmt::Formatter<'_>, spaces: usize) -> std::fmt::Result {
+        for _ in 0..spaces {
+            f.write_char(' ')?
+        }
+        Ok(())
+    }
+
+    /// Indented pretty-print helper
+    fn fmt_indent(&self, f: &mut std::fmt::Formatter<'_>, indent: usize) -> std::fmt::Result {
+        const INDENT_INC: usize = 4;
+        const HEXDUMP_W: usize = 16;
         match self {
             DynSqVar::Null => write!(f, "null"),
             DynSqVar::Integer(i) => write!(f, "{i}"),
@@ -1126,31 +1135,76 @@ impl std::fmt::Display for DynSqVar {
             DynSqVar::Bool(b) => write!(f, "{b}"),
             DynSqVar::String(s) => write!(f, "\"{s}\""),
             DynSqVar::Table(map) => {
-                write!(f, "{{")?;
-                for (key, val) in map {
-                    write!(f, "{key} <- {val}, ")?;
+                if map.is_empty() {
+                    write!(f, "{{}}")?;
+                    return Ok(())
                 }
+                
+                writeln!(f, "{{")?;
+                for (key, val) in map {
+                    Self::write_spaces(f, indent + INDENT_INC)?;
+                    write!(f, "{key} <- ")?;
+                    val.fmt_indent(f, indent + INDENT_INC)?;
+                    writeln!(f, ",")?;
+                }
+                Self::write_spaces(f, indent)?;
                 write!(f, "}}")?;
                 Ok(())
             },
             DynSqVar::Array(v) => { 
-                write!(f, "[")?;
-                for var in v {
-                    write!(f, "{var}, ")?;
+                if v.is_empty() {
+                    write!(f, "[]")?;
+                    return Ok(())
                 }
+
+                writeln!(f, "[")?;
+                for var in v {
+                    Self::write_spaces(f, indent + INDENT_INC)?;
+                    var.fmt_indent(f, indent + INDENT_INC)?;
+                    writeln!(f, ",")?;
+                }
+                Self::write_spaces(f, indent)?;
                 write!(f, "]")?;
                 Ok(())
             },
+            // Hexdump-like
             DynSqVar::UserData(u) => {
-                write!(f, "[")?;
-                for byte in &u.0 {
-                    write!(f, "0x{byte:X}, ")?;
+                if u.0.is_empty() {
+                    write!(f, "[]")?;
+                    return Ok(())
                 }
+
+                writeln!(f, "[")?;
+                for chunk in u.0.chunks(HEXDUMP_W) {
+                    Self::write_spaces(f, indent + INDENT_INC)?;
+
+                    for byte in chunk {
+                        write!(f, "{byte:02X} ")?;
+                    }
+                    
+                    let skipped = HEXDUMP_W - chunk.len();
+                    Self::write_spaces(f, skipped * 3)?;
+
+                    write!(f, "| ")?;
+
+                    for byte in chunk {
+                        write!(f, "{}", char::from(*byte))?;
+                    }
+
+                    writeln!(f)?;
+                }
+                Self::write_spaces(f, indent)?;
                 write!(f, "]")?;
                 Ok(())
             },
             DynSqVar::Unsupported(t) => write!(f, "{t:?}<ADDR>"),
         }
+    }
+}
+
+impl std::fmt::Display for DynSqVar {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.fmt_indent(f, 0)
     }
 }
 

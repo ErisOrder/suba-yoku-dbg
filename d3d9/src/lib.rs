@@ -1,6 +1,4 @@
 #![cfg(windows)]
-#![feature(abi_thiscall)]
-#![feature(macro_metavar_expr)]
 
 use std::time::Duration;
 

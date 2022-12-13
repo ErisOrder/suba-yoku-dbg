@@ -363,4 +363,10 @@ fn register_test_functions(vm: &mut SafeVm) {
         })
     }
 
+    vm.register_function("TestHexdumpUserdata", test_hexdump_userdata);
+    #[sqfn] 
+    fn test_hexdump_userdata() -> Vec<Vec<SqUserData>> {
+        let vec: Vec<_> = "hexdump test string that is 65 bytes, 5 rows in hexdump form long".as_bytes().into();
+        vec![vec![vec.into()]]
+    }
 }
