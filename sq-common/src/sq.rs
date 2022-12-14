@@ -482,6 +482,26 @@ pub trait SQVm: SqVmErrorHandling {
     fn push_root_table(&mut self) {
         unsafe { sq_pushroottable(self.handle()) }
     } 
+
+    /// Compiles a squirrel program.
+    /// 
+    /// if it succeeds, push the compiled script as function in the stack.
+    /// 
+    /// Args:
+    /// - `src_name` - the symbolic name of the program (used only for debugging)
+    #[inline]
+    fn compile_string(&mut self, script: String, src_name: Option<String>) -> Result<()> {
+        let src = 
+        if let Some(mut src) = src_name {
+            src.push('\0');
+            src.as_ptr() as _
+        } else { std::ptr::null() };
+        // TODO: Add error callback
+        sq_try! { self,
+            unsafe { sq_compilebuffer(self.handle(), script.as_ptr() as _, script.len() as _, src, 0) }
+        }?;
+        Ok(())
+    }
 }
 
 #[derive(Clone, PartialEq, PartialOrd, Eq, Debug, Hash)]
@@ -740,6 +760,22 @@ where Self: Sized
             sq_setreleasehook(self.handle(), idx, Some(hook));
             Ok(())
         }
+
+        /// Call a closure or a native closure.
+        ///
+        /// the function pops all the parameters and leave the closure in the stack.
+        /// 
+        /// if `retval` is true the return value of the closure is pushed.
+        /// 
+        /// If the execution of the function is suspended through sq_suspendvm(),
+        /// the closure and the arguments will not be automatically popped from the stack.
+        #[inline]
+        unsafe fn call_closure(&mut self, params: SqInteger, retval: bool, raise_error: bool) -> Result<()> {
+            sq_try! { self,
+                sq_call(self.handle(), params, retval as _, raise_error as _)
+            }?;
+            Ok(())
+        }
 }
 
 /// Advanced rust-wrapped operations
@@ -760,6 +796,16 @@ pub trait SqVmAdvanced<'a>: SqVmApi + SQVm + SqPush<&'a str> + SqPush<SqFunction
         self.push(closure).expect("Failed to push closure");
         self.new_slot(-3, false).expect("Failed to create slot in root table");
         self.pop(1);
+    }
+
+    /// Compile and execute arbitrary squirrel script
+    fn execute_script(&mut self, script: String, src_file: Option<String>) -> Result<()> {
+        self.compile_string(script, src_file)?;
+        self.push_root_table();
+        unsafe { self.call_closure(1, false, true) }?;
+        // Pop closure and root table
+        self.pop(2);
+        Ok(())
     }
 }
 
@@ -1098,6 +1144,7 @@ pub enum DynSqVar {
     Float(SqFloat),
     Bool(bool),
     String(String),
+    // TODO: Replace HashMap with BTreeMap
     Table(HashMap<DynSqVar, DynSqVar>),
     Array(Vec<DynSqVar>),
     UserData(SqUserData),

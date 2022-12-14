@@ -67,9 +67,9 @@ enum Commands {
     #[clap(visible_alias = "b", visible_alias = "break")]
     BreakpointAdd {
         /// Breakpoint specification.
-        /// 
+        ///
         /// Must be in format [file:<src>]:[function]:[line].
-        /// 
+        ///
         /// At least 1 condition must be specified.
         spec: String
     },
@@ -99,6 +99,17 @@ enum Commands {
     #[clap(visible_alias = "bl")]
     BreakpointList,
 
+    /// Compile and run arbitrary squirrel code
+    #[clap(visible_alias = "eval")]
+    Evaluate {
+        /// If specified, enable debugging of compiled script
+        #[clap(visible_alias = "dbg", long)]
+        debug: bool, 
+
+        /// Script to run
+        script: String,
+    },
+
     /// Set values of different debugging variables
     #[command(subcommand)]
     Set(SetCommands),
@@ -113,7 +124,8 @@ enum Commands {
 
 /// CLI Frontend for SQ debugger
 pub struct DebuggerFrontend {
-    last_cmd: Commands
+    last_cmd: Commands,
+    during_eval: bool,
 }
 
 /// Private methods
@@ -134,7 +146,7 @@ impl DebuggerFrontend {
             }
 
             print!("{name}: {:?}", val.get_type());
-            
+
             match val {
                 DynSqVar::Integer(i) => println!(" = {i}"),
                 DynSqVar::Float(f) => println!(" = {f}"),
@@ -187,7 +199,7 @@ impl DebuggerFrontend {
         let spec = spec.split(':').collect::<Vec<_>>();
 
         // Parse src file if present
-        let spec = { 
+        let spec = {
             let spec = &spec[..];
             if let ["file", src, ..] = spec[..] {
                 bp_proto = bp_proto.src_file(src.to_string());
@@ -197,21 +209,21 @@ impl DebuggerFrontend {
 
         // Parse remaining
         let bp = match spec {
-            [func, line] 
-            if func.starts_with(|c: char| !c.is_numeric()) 
-            && line.chars().all(|c| c.is_ascii_digit()) 
+            [func, line]
+            if func.starts_with(|c: char| !c.is_numeric())
+            && line.chars().all(|c| c.is_ascii_digit())
                 => bp_proto.fn_name(func.to_string())
                     .line(line.parse().unwrap()),
 
-            [line] if line.chars().all(|c| c.is_ascii_digit()) 
+            [line] if line.chars().all(|c| c.is_ascii_digit())
                 => bp_proto.line(line.parse().unwrap()),
 
-            [func] if func.starts_with(|c: char| !c.is_numeric()) 
+            [func] if func.starts_with(|c: char| !c.is_numeric())
                 => bp_proto.fn_name(func.to_string()),
 
             [] => bp_proto,
 
-            _ => { 
+            _ => {
                 println!("Invalid breakpoint format");
                 return;
             }
@@ -224,32 +236,52 @@ impl DebuggerFrontend {
 /// Public methods
 impl DebuggerFrontend {
     pub fn new() -> Self {
-        Self { last_cmd: Commands::default() }
+        Self { last_cmd: Commands::default(), during_eval: false }
     }
 
     /// Send last parsed args to debugger
-    pub fn do_actions(&self, dbg: &mut dbg::SqDebugger) {
+    pub fn do_actions(&mut self, dbg: &mut dbg::SqDebugger) {
         match &self.last_cmd {
-            Commands::Step => match dbg.step() {
-                Ok(e) => println!("{e}"),
-                Err(e) => println!("step failed: {e}"),
-            } ,
+            Commands::Step => if let Err(e) = dbg.step() {
+                println!("step failed: {e}");
+            }
+
             Commands::Continue => dbg.resume(),
+
             Commands::Backtrace => match dbg.get_backtrace() {
                 Ok(bt) => Self::print_backtrace(bt),
                 Err(e) => println!("failed to get backtrace: {e}"),
-            },
+            }
+
             Commands::Locals { level } =>
             match dbg.get_locals(*level) {
                 Ok(locals) => Self::print_locals(locals),
                 Err(e) => println!("failed to get locals: {e}"),
             }
+
             Commands::Examine { level, name } => Self::examine(dbg, name, *level),
             Commands::BreakpointAdd { spec } => Self::add_breakpoint(dbg, spec),
             Commands::BreakpointEnable { num } => dbg.breakpoints().enable(*num, true),
             Commands::BreakpointDisable { num } => dbg.breakpoints().enable(*num, false),
             Commands::BreakpointClear { num } => dbg.breakpoints().remove(*num),
             Commands::BreakpointList => println!("Breakpoints:\n{}", dbg.breakpoints()),
+
+            Commands::Evaluate { debug, script } => {
+                if self.during_eval {
+                    println!("failed to evaluate: cannot evaluate during evaluation");
+                    return;
+                } else {
+                    self.during_eval = true;
+                }
+
+                match dbg.execute("::printf(\"hello eval\")".into(), *debug) {
+                    Ok(res) => println!("evaluation result: {res}"),
+                    Err(e) => println!("failed to evaluate: {e}"),
+                }
+
+                self.during_eval = false;
+            }
+
             Commands::Set(var) => Self::set_var(var),
             Commands::Nop => (),
             Commands::Exit => std::process::exit(0),

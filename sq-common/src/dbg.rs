@@ -1,7 +1,9 @@
-use std::{time::Duration, sync::{Arc, mpsc, Mutex, MutexGuard}};
+use std::{time::Duration, sync::{Arc, Mutex, MutexGuard}};
 use anyhow::{Result, bail};
 use atomic::{Atomic, Ordering};
+use crossbeam::channel::{bounded, unbounded, Receiver, Sender};
 use crate::sq::*;
+
 
 const RECV_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -17,7 +19,8 @@ pub enum ExecState {
 pub enum DebugMsg {
     Step,
     Backtrace,
-    Locals(Option<SqUnsignedInteger>)
+    Locals(Option<SqUnsignedInteger>),
+    Eval(String, bool),
 }
 
 /// SqLocalVar annotated with level
@@ -50,9 +53,9 @@ pub type SqBacktrace = Vec<SqStackInfo>;
 
 #[derive(Clone, PartialEq, PartialOrd, Eq, Debug, Hash)]
 pub enum DebugResp {
-    Event(DebugEventWithSrc, Option<SqBreakpoint>),
     Backtrace(SqBacktrace),
-    Locals(Option<Vec<SqLocalVarWithLvl>>)
+    Locals(Option<Vec<SqLocalVarWithLvl>>),
+    EvalResult(String),
 }
 
 /// Struct for holding breakpoint data. At least 1 condition field must be specified for it to work 
@@ -209,11 +212,26 @@ impl std::fmt::Display for BreakpointStore {
     }
 }
 
+type DebugEventBundle = (DebugEventWithSrc, Option<SqBreakpoint>);
+
+/// SQ Debugger middleware (backend is debug hook closure)
 pub struct SqDebugger{
+    /// State of execution, shared with hook
     exec_state: Arc<Atomic<ExecState>>,
-    sender: mpsc::Sender<DebugMsg>,
-    receiver: mpsc::Receiver<DebugResp>,
+
+    /// Channel for sending commands to hook
+    sender: Sender<DebugMsg>,
+
+    /// Channel for receiveing responses from hook
+    receiver: Receiver<DebugResp>,
+
+    /// Channel only for receiving events
+    event_receiver: Receiver<DebugEventBundle>,
+
+    /// Breakpont store, shared with hook
     breakpoints: Arc<Mutex<BreakpointStore>>,
+
+    /// VM being debugged
     vm: SafeVm,
 }
 
@@ -222,33 +240,41 @@ impl SqDebugger
     /// Attach debugger to SQVM through setting debug hook.
     pub fn attach(vm: SafeVm) -> SqDebugger {
 
-        let (tx, rx) = mpsc::channel();
-        let (resp_tx, resp_rx) = mpsc::sync_channel(0);
+        let (tx, rx) = unbounded();
+        let (resp_tx, resp_rx) = bounded(0);
+        let (event_tx, event_rx) = bounded(0);
 
         let mut dbg = Self {
             exec_state: Arc::new(Atomic::new(ExecState::Halted)),
             sender: tx,
             receiver: resp_rx,
+            event_receiver: event_rx,
             breakpoints: Arc::new(Mutex::new(BreakpointStore::new())),
             vm,
         };
 
         let exec_state = dbg.exec_state.clone();
         let breakpoints = dbg.breakpoints.clone();
+        let mut debugging = true;
 
         // Attached debugger will receive messages and respond to them
         dbg.vm.set_debug_hook(move |e, vm| {
+
+            // if debugging disabled during hook call
+            if !debugging {
+                return;
+            }
 
             if exec_state.load(Ordering::Relaxed) == ExecState::Halted {
                 // Vm was halted or step cmd was received on previous debug hook call
                 // So send debug event back
                 // This will block until msg isn`t received
-                resp_tx.send(DebugResp::Event(e, None)).unwrap();
+                event_tx.send((e, None)).unwrap();
             } else if let Some(bp) = breakpoints.lock().unwrap().match_event(&e) {
                 // If VM was running and ran into breakpoint,
                 // halt it and send back event with breakpoint
                 exec_state.store(ExecState::Halted, Ordering::Relaxed);
-                resp_tx.send(DebugResp::Event(e, Some(bp.clone()))).unwrap();
+                event_tx.send((e, Some(bp.clone()))).unwrap();
             }
             
             loop {
@@ -271,6 +297,7 @@ impl SqDebugger
                         // Store all locals if level isn`t specified  
                         let mut lvl = if let Some(lvl) = lvl_opt { lvl } else { 1 };
 
+                        // TODO: Add vm intrinsic or lib extension to get callstack size
                         // Try to get zeroth local
                         while let Ok(loc) = vm.get_local(lvl, 0) {
                             v.push(SqLocalVarWithLvl { var: loc, lvl });
@@ -290,6 +317,29 @@ impl SqDebugger
 
                         resp_tx.send(DebugResp::Locals(if v.is_empty() { None } else { Some(v) })).unwrap();
                     },
+                    DebugMsg::Eval(script, debug) => {
+
+                        // it`s a bit of black magic, so compiler can`t infer that...
+                        // hook will be called again during compiled closure call,
+                        // so this closure implicitly becomes recursive
+                        #[allow(unused_assignments)] {
+                            debugging = debug;
+                        }
+
+                        let res = vm.execute_script(script, Some("eval.nut".into()));
+
+                        let res = match res {
+                            Ok(_) => "Ok".into(),
+                            Err(e) => e.to_string(),
+                        };
+                        
+                        // TODO: Improve reporting with debug enabled
+                        if !debug {
+                            resp_tx.send(DebugResp::EvalResult(res)).unwrap();
+                        }
+
+                        debugging = true;
+                    }
                 }}
 
                 if exec_state.load(Ordering::Relaxed) == ExecState::Running {
@@ -307,11 +357,9 @@ impl SqDebugger
         self.exec_state.store(ExecState::Running, Ordering::Relaxed);
     }
 
-    /// Get internal message receiver
-    /// 
-    /// May be useful to manage complicated states such as getting message from suspended vm thread 
-    pub fn receiver(&self) -> &mpsc::Receiver<DebugResp> {
-        &self.receiver
+    /// Get event receiver
+    pub fn event_rx(&self) -> &Receiver<DebugEventBundle> {
+        &self.event_receiver
     }
 
     /// Get breakpoint store
@@ -320,30 +368,14 @@ impl SqDebugger
     }
 
     /// Halt execution by blocking vm on debug hook call
-    /// 
-    /// Returns last received event if `no_recv` is `false`
-    pub fn halt(&self, no_recv: bool) -> Result<Option<DebugEventWithSrc>> {
-        let prev = self.exec_state.swap(ExecState::Halted, Ordering::Relaxed);
-        
-        if prev == ExecState::Running && !no_recv {
-            match self.receiver.recv_timeout(RECV_TIMEOUT) {
-                Ok(DebugResp::Event(e, _)) => Ok(Some(e)),
-                Ok(r) => bail!("{r:?}: expected event"),
-                Err(e) => bail!("{e}")
-            }
-        } else { Ok(None) }
+    pub fn halt(&self) {
+        self.exec_state.store(ExecState::Halted, Ordering::Relaxed);
     }
 
     /// Unlock current debug hook call
-    /// 
-    /// Returns received event
-    pub fn step(&self) -> Result<DebugEventWithSrc> {
+    pub fn step(&self) -> Result<()> {
         self.sender.send(DebugMsg::Step)?;
-        match self.receiver.recv_timeout(RECV_TIMEOUT) {
-            Ok(DebugResp::Event(e, _)) => Ok(e),
-            Ok(r) => bail!("{r:?}: expected event"),
-            Err(e) => bail!("{e}")
-        }
+        Ok(())
     }
 
     /// Get local variables and their values at specified level.
@@ -363,6 +395,29 @@ impl SqDebugger
                 }},
             Ok(r) => bail!("{r:?}: expected locals"),
             Err(e) => bail!("{e}")
+        }
+    }
+    
+    // FIXME: For some reason, currently executing script more,
+    // than 7 times in a row crashing the vm with 
+    // "assertion failed: _oldstackbase >= _stackbase"
+    // sqvm.cpp:416
+
+    /// Compile and execute arbitrary squirrel script
+    /// 
+    /// Args:
+    /// - `debug` - if `true`, enable debugging of compiled script
+    pub fn execute(&self, script: String, debug: bool) -> Result<String> {
+        self.sender.send(DebugMsg::Eval(script, debug))?;
+
+        if !debug {
+            match self.receiver.recv_timeout(RECV_TIMEOUT) {
+                Ok(DebugResp::EvalResult(res)) => Ok(res),
+                Ok(r) => bail!("{r:?}: expected eval result"),
+                Err(e) => bail!("{e}")
+            }
+        } else {
+            Ok("ok".into())
         }
     }
 

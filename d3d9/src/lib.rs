@@ -81,9 +81,9 @@ fn dll_init() {
         let Some(ref dbg) = *hooks::SQ_DEBUGGER.lock().unwrap()
         else { return };
 
-        if dbg.exec_state() == dbg::ExecState::Running {
-            let e = dbg.halt(false).unwrap().unwrap();
-            println!("Execution halted:\n{e}");
+        if dbg.exec_state() == dbg::ExecState::Running {            
+            println!("Execution halted");
+            dbg.halt();
         }
     }).expect("failed to set ctrl+c handler");
 
@@ -104,41 +104,59 @@ fn dll_init() {
         debug!("vm init hook installed");
     }
 
-    std::thread::spawn(|| {
-        let mut front = util::DebuggerFrontend::new();
-        let mut arg_str =  String::new();
+    // Event Receiver thread
+    std::thread::spawn(|| { 
+        // Wait until debugger attached
+        let recv = loop {
+            if let Some(ref mut dbg) = *hooks::SQ_DEBUGGER.lock().unwrap() {
+                break dbg.event_rx().clone();
+            } else {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        };
 
+        // Debugger frontend thread
+        // It`s spawned here, because event listener needs to be acquired first
+        // due to frontend thread locking debugger mutex 
+        std::thread::spawn(|| {
+            let mut front = util::DebuggerFrontend::new();
+            let mut arg_str =  String::new();
+        
+            println!("Debugger attached, type `help` to get available commands list");
+
+            loop {
+                std::thread::sleep(Duration::from_millis(20));
+            
+                let Some(ref mut dbg) = *hooks::SQ_DEBUGGER.lock().unwrap()
+                else { unreachable!() };
+            
+                if let dbg::ExecState::Halted = dbg.exec_state() {
+                    std::io::stdin().read_line(&mut arg_str).unwrap();
+                    
+                    if !arg_str.trim().is_empty() {
+                        match front.parse_args(&arg_str) {
+                            Ok(_) => front.do_actions(dbg),
+                            Err(e) => println!("{e}"),
+                        };
+                    } else { 
+                        front.do_actions(dbg);
+                    }
+                
+                    arg_str.clear();
+                }
+            }
+        });
+
+        // Print received events
         loop {
-            std::thread::sleep(Duration::from_millis(20));
-    
-            let Some(ref mut dbg) = *hooks::SQ_DEBUGGER.lock().unwrap()
-            else { continue };
-
-            // Print out messages, if vm reached breakpoint
-            if let Ok(dbg::DebugResp::Event(e, Some(bp))) = 
-                dbg.receiver().try_recv() 
-            {
-                println!("Reached debugger breakpoint {}", bp.number);
+            if let Ok((e, bp)) = recv.try_recv() { 
+                if let Some(bp) = bp {
+                    println!("Reached debugger breakpoint {}", bp.number);
+                }
                 println!("{e}");
             }
-    
-            if let dbg::ExecState::Halted = dbg.exec_state() {
-                std::io::stdin().read_line(&mut arg_str).unwrap();
-                
-                if !arg_str.trim().is_empty() {
-                    match front.parse_args(&arg_str) {
-                        Ok(_) => front.do_actions(dbg),
-                        Err(e) => println!("{e}"),
-                    };
-                } else { 
-                    front.do_actions(dbg);
-                }
-
-                arg_str.clear();
-            }
-        }
+        }   
     });
-
 }
 
 
