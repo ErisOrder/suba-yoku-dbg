@@ -1,7 +1,7 @@
 use anyhow::{bail, Context};
 use squirrel2_kaleido_rs::*;
 use util_proc_macro::{set_sqfn_paths, sq_closure};
-use std::{ptr::{addr_of_mut, addr_of}, cmp::Ordering, collections::HashMap, hash::Hash, fmt::Write};
+use std::{ptr::addr_of_mut, cmp::Ordering, collections::HashMap, hash::Hash, fmt::Write};
 use anyhow::{
     Result,
     anyhow

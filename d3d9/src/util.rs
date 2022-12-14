@@ -1,6 +1,5 @@
 use sq_common::{*, dbg::{SqLocalVarWithLvl}};
 use std::sync::atomic;
-use std::io::BufRead;
 use clap::{Subcommand, Command, FromArgMatches};
 use anyhow::Result;
 use crate::hooks;
@@ -9,12 +8,6 @@ use crate::hooks;
 enum BoolVal {
     True,
     False,
-}
-
-#[derive(clap::ValueEnum, Copy, Clone, Debug, PartialEq)]
-enum EvalCommands {
-    New,
-    Prev,
 }
 
 impl From<BoolVal> for bool {
@@ -33,6 +26,38 @@ enum SetCommands {
         #[arg(value_enum)]
         active: BoolVal,
     }
+}
+
+#[derive(Subcommand, Debug)]
+enum BufferCommands {
+    /// Create new empty buffer
+    #[clap(visible_alias = "n")]
+    New,
+
+    /// Delete buffer by number
+    #[clap(visible_alias = "d", visible_alias = "del")]
+    Delete {
+        /// Number of buffer
+        num: u32
+    },
+
+    /// Edit existing buffer by number
+    #[clap(visible_alias = "e")]
+    Edit {
+        /// Number of buffer
+        num: u32
+    },
+
+    /// Print buffer by number 
+    #[clap(visible_alias = "p")]
+    Print {
+        /// Number of buffer
+        num: u32
+    },
+
+    /// List available buffers
+    #[clap(visible_alias = "ls")]
+    List,
 }
 
 /// CLI Frontend commands
@@ -113,9 +138,14 @@ enum Commands {
         #[clap(visible_alias = "dbg", long)]
         debug: bool, 
 
-        /// `new` to write new script, `prev` to re-execute previous 
-        reuse: EvalCommands,
+        /// Choose script buffer to evaluate. If not specified, new buffer will be created.
+        buffer: Option<u32>,
     },
+
+    /// Add, remove, edit and view script buffers
+    #[clap(visible_alias = "buf")]
+    #[command(subcommand)]
+    Buffer(BufferCommands),
 
     /// Continue execution, but print every debug event.
     ///
@@ -138,7 +168,7 @@ enum Commands {
 /// CLI Frontend for SQ debugger
 pub struct DebuggerFrontend {
     last_cmd: Commands,
-    last_script: String,
+    buffers: ScriptBuffers,
     during_eval: bool,
 }
 
@@ -245,6 +275,19 @@ impl DebuggerFrontend {
 
         dbg.breakpoints().add(bp);
     }
+
+    /// Create or edit buffer
+    fn edit_buffer(prev: Option<&str>) -> Result<String> {
+        match scrawl::editor::new()
+        .editor("nvim")
+        .extension(".nut")
+        .contents(prev.unwrap_or_default())
+        .open() 
+        {
+            Ok(s) => Ok(s),
+            Err(_) => Ok(scrawl::new()?),
+        }
+    }
 }
 
 /// Public methods
@@ -252,7 +295,7 @@ impl DebuggerFrontend {
     pub fn new() -> Self {
         Self { 
             last_cmd: Commands::default(),
-            last_script: String::new(),
+            buffers: ScriptBuffers::new(),
             during_eval: false
         }
     }
@@ -284,34 +327,63 @@ impl DebuggerFrontend {
             Commands::BreakpointClear { num } => dbg.breakpoints().remove(*num),
             Commands::BreakpointList => println!("Breakpoints:\n{}", dbg.breakpoints()),
 
-            Commands::Evaluate { debug , reuse } => {
+            Commands::Evaluate { debug , buffer } => {
                 if self.during_eval {
                     println!("failed to evaluate: cannot evaluate during evaluation");
                     return;
                 }
 
-                if *reuse == EvalCommands::New {
-                    println!("You entered editor mode. Press Ctrl+Z to exit");
-                    let mut buf = vec![];
-                    std::io::stdin().lock().read_until(0, &mut buf).unwrap();
-    
-                    self.last_script = match String::from_utf8(buf) {
-                        Ok(script) => script,
+                let script = match buffer {
+                    Some(num ) if self.buffers.get(*num).is_some() => {
+                        self.buffers.get(*num).unwrap()
+                    }, 
+                    _ => match Self::edit_buffer(None) {
+                        Ok(s) => {
+                            let num = self.buffers.add(s);
+                            self.buffers.get(num).unwrap()
+                        },
                         Err(e) => {
-                            println!("editor error: {e}");
+                            println!("failed to open editor: {e}");
                             return;
                         },
-                    };
-                }
+                    },
+                };
 
                 self.during_eval = true;
 
-                match dbg.execute(self.last_script.clone(), *debug) {
+                match dbg.execute(script.clone(), *debug) {
                     Ok(res) => println!("evaluation result: {res}"),
                     Err(e) => println!("failed to evaluate: {e}"),
                 }
 
                 self.during_eval = false;
+            }
+
+            Commands::Buffer(cmd) => match cmd {
+                BufferCommands::New => match Self::edit_buffer(None) {
+                    Ok(s) =>println!("new buffer number: {}", self.buffers.add(s)),
+                    Err(e) => println!("failed to open editor: {e}"),
+                }
+
+                BufferCommands::Delete { num } => self.buffers.delete(*num),
+                BufferCommands::Edit { num } => 
+                if let Some(b) = self.buffers.get(*num) {
+                    match Self::edit_buffer(Some(b)) {
+                        Ok(s) => self.buffers.replace(*num, s),
+                        Err(e) => println!("failed to open editor: {e}"),
+                    }
+                } else {
+                    println!("no such buffer")
+                }
+            
+                BufferCommands::Print { num } => 
+                if let Some(b) = self.buffers.get(*num) {
+                    println!("{b}");
+                } else {
+                    println!("no such buffer")
+                }
+                
+                BufferCommands::List => println!("{}", self.buffers),
             }
 
             Commands::Trace => if let Err(e) = dbg.start_tracing() {
@@ -333,5 +405,61 @@ impl DebuggerFrontend {
             },
             Err(e) => Err(e.into()),
         }
+    }
+}
+
+/// Struct that holds multiple string with script
+struct ScriptBuffers {
+    store: Vec<(u32, String)>,
+    counter: u32,
+}
+
+impl ScriptBuffers {
+    /// Create new ScriptBuffers
+    pub fn new() -> Self {
+        Self { store: vec![], counter: 1 }
+    }
+
+    /// Add buffer. Returns added buffer number
+    pub fn add(&mut self, buf: String) -> u32 {
+        self.store.push((self.counter, buf));
+        self.counter += 1;
+        self.counter - 1
+    }
+
+    /// Get buffer by number
+    pub fn get(&mut self, number: u32) -> Option<&String> {
+        self.store.iter().find(|(n, _)| *n == number).map(|(_, b)| b)
+    }
+
+    /// Replace buffer by number. If buffer with specified number doesn't exist, do nothing
+    pub fn replace(&mut self, number: u32, buf: String) {
+        if let Some(b) = self.store.iter_mut().find(|(n, _)| *n == number) {
+            *b = (number, buf);
+        }
+    }
+
+    /// Delete buffer by number
+    pub fn delete(&mut self, number: u32) {
+        self.store.retain(|(n, _)| *n != number)
+    }
+}
+
+impl std::fmt::Display for ScriptBuffers {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        const NUM_FIELD: usize = 8;
+
+        if self.store.is_empty() {
+            return write!(f, "no buffers available");
+        }
+
+        write!(f, "{:<NUM_FIELD$}content", "number")?;
+        for (n, buf) in &self.store {
+            // print separating newline
+            writeln!(f)?;
+            let line = buf.lines().next();
+            write!(f, "{n:<NUM_FIELD$}{} ...", if let Some(l) = line{ l } else { "" })?;
+        }
+        Ok(())
     }
 }
