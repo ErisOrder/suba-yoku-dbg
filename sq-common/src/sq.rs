@@ -638,6 +638,12 @@ where Self: Sized
             bail!("Failed to get name of local at lvl: {level} idx: {idx}");
         }
     }
+
+    /// Get size of vm calls stack
+    #[inline]
+    fn call_stack_len(&mut self) -> SqInteger {
+        unsafe { sq_getcallstacksize(self.handle()) }
+    }
 }
 
 /// Unsafe object manipulation

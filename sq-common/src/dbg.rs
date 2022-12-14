@@ -299,11 +299,15 @@ impl SqDebugger
                     DebugMsg::Step => break,
                     DebugMsg::Backtrace => {
                         let mut bt = vec![];
-                        let mut lvl = 1;
-                        while let Ok(info) = vm.get_stack_info(lvl) {
-                            bt.push(info);
-                            lvl += 1;
+
+                        let stack_size = vm.call_stack_len() as u32;
+
+                        for lvl in 1..stack_size {
+                            if let Ok(info) = vm.get_stack_info(lvl) {
+                                bt.push(info);
+                            }
                         }
+
                         resp_tx.send(DebugResp::Backtrace(bt)).unwrap();
                     },
 
@@ -313,18 +317,21 @@ impl SqDebugger
                         break;
                     }
 
-                    DebugMsg::Locals(lvl_opt) => {
-                        let mut v = vec![];
+                    DebugMsg::Locals(lvl_opt) => 'locals: {
+                        let stack_size = vm.call_stack_len() as u32;
 
                         // Store all locals if level isn`t specified  
-                        let mut lvl = if let Some(lvl) = lvl_opt { lvl } else { 1 };
+                        let lvl = if let Some(lvl) = lvl_opt { lvl } else { 1 };
 
-                        // TODO: Add vm intrinsic or lib extension to get callstack size
-                        // Try to get zeroth local
-                        while let Ok(loc) = vm.get_local(lvl, 0) {
-                            v.push(SqLocalVarWithLvl { var: loc, lvl });
+                        if lvl >= stack_size || lvl < 1 {
+                            resp_tx.send(DebugResp::Locals(None)).unwrap();
+                            break 'locals;
+                        }
 
-                            let mut idx = 1;
+                        let mut v = vec![];
+
+                        for lvl in lvl..stack_size {
+                            let mut idx = 0;
                             while let Ok(loc) = vm.get_local(lvl, idx) {
                                 v.push(SqLocalVarWithLvl { var: loc, lvl });
                                 idx += 1;
@@ -332,8 +339,6 @@ impl SqDebugger
 
                             if lvl_opt.is_some() {
                                 break;
-                            } else {
-                                lvl += 1;
                             }
                         }
 
