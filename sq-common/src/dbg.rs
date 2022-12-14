@@ -19,6 +19,7 @@ pub enum ExecState {
 pub enum DebugMsg {
     Step,
     Backtrace,
+    Trace,
     Locals(Option<SqUnsignedInteger>),
     Eval(String, bool),
 }
@@ -256,27 +257,41 @@ impl SqDebugger
         let exec_state = dbg.exec_state.clone();
         let breakpoints = dbg.breakpoints.clone();
         let mut debugging = true;
+        let mut tracing = false;
 
         // Attached debugger will receive messages and respond to them
         dbg.vm.set_debug_hook(move |e, vm| {
 
+            let bp = breakpoints.lock().unwrap()
+                .match_event(&e)
+                .cloned();
+
+            // If VM was running and ran into breakpoint, halt it 
+            let state = if bp.is_some() {
+                tracing = false;
+                exec_state.store(ExecState::Halted, Ordering::Relaxed);
+                ExecState::Halted
+            } else {
+                exec_state.load(Ordering::Relaxed)
+            };
+    
+            // If tracing active, or vm ran into brakpoint, or 
+            // step cmd was received on previous debug hook call,
+            // send debug event back with optional breakpoint
+            if tracing || state == ExecState::Halted {
+                event_tx.send((e, bp)).unwrap();
+
+                // Stop tracing, if vm was halted 
+                if state == ExecState::Halted {
+                    tracing = false;
+                }
+            }
+            
             // if debugging disabled during hook call
             if !debugging {
                 return;
             }
 
-            if exec_state.load(Ordering::Relaxed) == ExecState::Halted {
-                // Vm was halted or step cmd was received on previous debug hook call
-                // So send debug event back
-                // This will block until msg isn`t received
-                event_tx.send((e, None)).unwrap();
-            } else if let Some(bp) = breakpoints.lock().unwrap().match_event(&e) {
-                // If VM was running and ran into breakpoint,
-                // halt it and send back event with breakpoint
-                exec_state.store(ExecState::Halted, Ordering::Relaxed);
-                event_tx.send((e, Some(bp.clone()))).unwrap();
-            }
-            
             loop {
                 if let Ok(msg) = rx.try_recv() { match msg {
                     // Expected immediate receive on other end for all sending cmds
@@ -291,6 +306,13 @@ impl SqDebugger
                         }
                         resp_tx.send(DebugResp::Backtrace(bt)).unwrap();
                     },
+
+                    DebugMsg::Trace => {
+                        tracing = true;
+                        exec_state.store(ExecState::Running, Ordering::Relaxed);
+                        break;
+                    }
+
                     DebugMsg::Locals(lvl_opt) => {
                         let mut v = vec![];
 
@@ -350,6 +372,12 @@ impl SqDebugger
         });
 
         dbg
+    }
+
+    /// Continue execution, but send every debug event
+    pub fn start_tracing(&self) -> Result<()> {
+        self.sender.send(DebugMsg::Trace)?;
+        Ok(())
     }
 
     /// Resume execution

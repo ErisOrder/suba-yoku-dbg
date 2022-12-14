@@ -149,7 +149,7 @@ fn dll_init() {
 
         // Print received events
         loop {
-            if let Ok((e, bp)) = recv.try_recv() { 
+            if let Ok((e, bp)) = recv.recv() { 
                 if let Some(bp) = bp {
                     println!("Reached debugger breakpoint {}", bp.number);
                 }

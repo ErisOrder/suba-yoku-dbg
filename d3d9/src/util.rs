@@ -117,6 +117,12 @@ enum Commands {
         reuse: EvalCommands,
     },
 
+    /// Continue execution, but print every debug event.
+    ///
+    /// Warning: due to heavy use of stdout, it may be hard to send stop command to debugger, use breakpoints instead 
+    #[clap(visible_alias = "t")]
+    Trace,
+
     /// Set values of different debugging variables
     #[command(subcommand)]
     Set(SetCommands),
@@ -306,6 +312,10 @@ impl DebuggerFrontend {
                 }
 
                 self.during_eval = false;
+            }
+
+            Commands::Trace => if let Err(e) = dbg.start_tracing() {
+                println!("trace failed: {e}")
             }
 
             Commands::Set(var) => Self::set_var(var),
