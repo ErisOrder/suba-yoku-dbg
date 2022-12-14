@@ -1,5 +1,6 @@
 use sq_common::{*, dbg::{SqLocalVarWithLvl}};
 use std::sync::atomic;
+use std::io::BufRead;
 use clap::{Subcommand, Command, FromArgMatches};
 use anyhow::Result;
 use crate::hooks;
@@ -8,6 +9,12 @@ use crate::hooks;
 enum BoolVal {
     True,
     False,
+}
+
+#[derive(clap::ValueEnum, Copy, Clone, Debug, PartialEq)]
+enum EvalCommands {
+    New,
+    Prev,
 }
 
 impl From<BoolVal> for bool {
@@ -106,8 +113,8 @@ enum Commands {
         #[clap(visible_alias = "dbg", long)]
         debug: bool, 
 
-        /// Script to run
-        script: String,
+        /// `new` to write new script, `prev` to re-execute previous 
+        reuse: EvalCommands,
     },
 
     /// Set values of different debugging variables
@@ -125,6 +132,7 @@ enum Commands {
 /// CLI Frontend for SQ debugger
 pub struct DebuggerFrontend {
     last_cmd: Commands,
+    last_script: String,
     during_eval: bool,
 }
 
@@ -236,7 +244,11 @@ impl DebuggerFrontend {
 /// Public methods
 impl DebuggerFrontend {
     pub fn new() -> Self {
-        Self { last_cmd: Commands::default(), during_eval: false }
+        Self { 
+            last_cmd: Commands::default(),
+            last_script: String::new(),
+            during_eval: false
+        }
     }
 
     /// Send last parsed args to debugger
@@ -266,15 +278,29 @@ impl DebuggerFrontend {
             Commands::BreakpointClear { num } => dbg.breakpoints().remove(*num),
             Commands::BreakpointList => println!("Breakpoints:\n{}", dbg.breakpoints()),
 
-            Commands::Evaluate { debug, script } => {
+            Commands::Evaluate { debug , reuse } => {
                 if self.during_eval {
                     println!("failed to evaluate: cannot evaluate during evaluation");
                     return;
-                } else {
-                    self.during_eval = true;
                 }
 
-                match dbg.execute("::printf(\"hello eval\")".into(), *debug) {
+                if *reuse == EvalCommands::New {
+                    println!("You entered editor mode. Press Ctrl+Z to exit");
+                    let mut buf = vec![];
+                    std::io::stdin().lock().read_until(0, &mut buf).unwrap();
+    
+                    self.last_script = match String::from_utf8(buf) {
+                        Ok(script) => script,
+                        Err(e) => {
+                            println!("editor error: {e}");
+                            return;
+                        },
+                    };
+                }
+
+                self.during_eval = true;
+
+                match dbg.execute(self.last_script.clone(), *debug) {
                     Ok(res) => println!("evaluation result: {res}"),
                     Err(e) => println!("failed to evaluate: {e}"),
                 }

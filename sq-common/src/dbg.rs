@@ -326,7 +326,7 @@ impl SqDebugger
                             debugging = debug;
                         }
 
-                        let res = vm.execute_script(script, Some("eval.nut".into()));
+                        let res = vm.execute_script(script, "eval.nut".into());
 
                         let res = match res {
                             Ok(_) => "Ok".into(),
@@ -398,11 +398,6 @@ impl SqDebugger
         }
     }
     
-    // FIXME: For some reason, currently executing script more,
-    // than 7 times in a row crashing the vm with 
-    // "assertion failed: _oldstackbase >= _stackbase"
-    // sqvm.cpp:416
-
     /// Compile and execute arbitrary squirrel script
     /// 
     /// Args:

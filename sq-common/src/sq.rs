@@ -1,7 +1,7 @@
 use anyhow::{bail, Context};
 use squirrel2_kaleido_rs::*;
 use util_proc_macro::{set_sqfn_paths, sq_closure};
-use std::{ptr::addr_of_mut, cmp::Ordering, collections::HashMap, hash::Hash, fmt::Write};
+use std::{ptr::{addr_of_mut, addr_of}, cmp::Ordering, collections::HashMap, hash::Hash, fmt::Write};
 use anyhow::{
     Result,
     anyhow
@@ -87,6 +87,14 @@ impl std::fmt::Display for SqStackInfo {
 
 pub type SqReleaseHook = extern "C" fn(p: SQUserPointer, size: SqInteger) -> SqInteger;
 
+pub type SqCompilerErrorHandler = extern "C" fn(
+    vm: HSQUIRRELVM,
+    desc: *const i8,
+    src: *const i8,
+    line: SqInteger,
+    column: SqInteger,
+);
+
 /// C SQFunction type 
 pub type SqFunction = extern "C" fn(HSQUIRRELVM) -> SqInteger;
 
@@ -118,6 +126,23 @@ pub enum DebugEvent {
 pub struct DebugEventWithSrc {
     pub event: DebugEvent,
     pub src: Option<String>
+}
+
+/// Error received from SQ compiler
+#[derive(Clone, PartialEq, PartialOrd, Eq, Ord, Debug, Hash)]
+#[repr(C)]
+pub struct SqCompilerError {
+    pub line: SqInteger,
+    pub column: SqInteger,
+    pub description: String,
+    pub source: String,
+}
+
+impl std::fmt::Display for SqCompilerError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let SqCompilerError { line, column, description, source } = self;
+        write!(f, "{source}:{line}:{column}: error: {description}")
+    }
 }
 
 /// Rust-adapted SQObjectType enum
@@ -489,17 +514,19 @@ pub trait SQVm: SqVmErrorHandling {
     /// 
     /// Args:
     /// - `src_name` - the symbolic name of the program (used only for debugging)
-    #[inline]
-    fn compile_string(&mut self, script: String, src_name: Option<String>) -> Result<()> {
-        let src = 
-        if let Some(mut src) = src_name {
-            src.push('\0');
-            src.as_ptr() as _
-        } else { std::ptr::null() };
-        // TODO: Add error callback
-        sq_try! { self,
-            unsafe { sq_compilebuffer(self.handle(), script.as_ptr() as _, script.len() as _, src, 0) }
-        }?;
+    /// - `raise_err` - if `true`, vm will call compiler error handler
+    fn compile_string(&mut self, script: String, mut src_name: String, raise_err: bool) -> Result<()> {
+        src_name.push('\0');
+
+        sq_try! { self, nothrow unsafe { 
+            sq_compilebuffer(
+                self.handle(),
+                script.as_ptr() as _,
+                script.len() as _,
+                src_name.as_ptr() as _,
+                raise_err as _
+            ) 
+        }}?;
         Ok(())
     }
 }
@@ -776,10 +803,20 @@ where Self: Sized
             }?;
             Ok(())
         }
+
+        /// Set the compiler error handler function.
+        /// 
+        /// The compiler error handler is shared between friend VMs.
+        #[inline]
+        unsafe fn set_compiler_error_handler(&mut self, handler: Option<SqCompilerErrorHandler>) {
+            let handler: SQCOMPILERERROR = handler.map(|h| h as _);
+            sq_setcompilererrorhandler(self.handle(), handler);
+        }
+
 }
 
 /// Advanced rust-wrapped operations
-pub trait SqVmAdvanced<'a>: SqVmApi + SQVm + SqPush<&'a str> + SqPush<SqFunction> {
+pub trait SqVmAdvanced<'a>: SqVmApi + SQVm + SqPush<&'a str> + SqPush<SqFunction> + SqGet<SqUserData> { 
     /// Bind rust native function to root table of SQVM
     fn register_function(&mut self, name: &'a str, func: SqFunction) {
         self.push_root_table();
@@ -799,12 +836,56 @@ pub trait SqVmAdvanced<'a>: SqVmApi + SQVm + SqPush<&'a str> + SqPush<SqFunction
     }
 
     /// Compile and execute arbitrary squirrel script
-    fn execute_script(&mut self, script: String, src_file: Option<String>) -> Result<()> {
-        self.compile_string(script, src_file)?;
+    fn execute_script(&mut self, script: String, src_file: String) -> Result<()> {
+
+        /// This handler will push SqCompilerError ptr to stack as userdata
+        extern "C" fn error_handler(
+            vm: HSQUIRRELVM,
+            desc: *const i8,
+            src: *const i8,
+            line: SqInteger,
+            column: SqInteger,
+        ) {
+            unsafe { 
+                let err = Box::new(SqCompilerError {
+                    line,
+                    column,
+                    description: cstr_to_string(desc),
+                    source: cstr_to_string(src),
+                });
+
+                let ptr = Box::leak(err) as *mut _;
+                let data: Vec<_> = (ptr as usize).to_ne_bytes().into();
+                UnsafeVm::from_handle(vm).push(SqUserData::from(data)).unwrap();
+            }
+        }
+        
+        let compile_res = unsafe { 
+            self.set_compiler_error_handler(Some(error_handler));
+            let res = self.compile_string(script, src_file, true);
+            self.set_compiler_error_handler(None);
+            res
+        };
+
+        if compile_res.is_err() {
+            let err_box: SqUserData = self.get(-1).context("Failed to get error userdata")?;
+
+            let err: Box<SqCompilerError> = unsafe {
+                let err_box: usize = std::ptr::read(err_box.unwrap().as_ptr() as _);
+                Box::from_raw(err_box as *mut _)
+            };
+
+            // Pop error
+            self.pop(1);
+
+            bail!("{err}");
+        };
+
         self.push_root_table();
-        unsafe { self.call_closure(1, false, true) }?;
-        // Pop closure and root table
-        self.pop(2);
+
+        unsafe { self.call_closure(1, false, false) }?;
+        // Pop closure
+        self.pop(1);
         Ok(())
     }
 }
