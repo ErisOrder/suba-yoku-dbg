@@ -145,6 +145,8 @@ impl std::fmt::Display for SqCompilerError {
     }
 }
 
+impl std::error::Error for SqCompilerError {}
+
 /// Rust-adapted SQObjectType enum
 #[derive(Copy, Clone, PartialEq, PartialOrd, Eq, Ord, Debug, Hash)]
 pub enum SqType {
@@ -862,7 +864,8 @@ pub trait SqVmAdvanced<'a>: SqVmApi + SQVm + SqPush<&'a str> + SqPush<SqFunction
 
                 let ptr = Box::leak(err) as *mut _;
                 let data: Vec<_> = (ptr as usize).to_ne_bytes().into();
-                UnsafeVm::from_handle(vm).push(SqUserData::from(data)).unwrap();
+                UnsafeVm::from_handle(vm).push(SqUserData::from(data))
+                    .expect("Failed to push compiler error");
             }
         }
         
@@ -884,7 +887,7 @@ pub trait SqVmAdvanced<'a>: SqVmApi + SQVm + SqPush<&'a str> + SqPush<SqFunction
             // Pop error
             self.pop(1);
 
-            bail!("{err}");
+            bail!(err);
         };
 
         self.push_root_table();
@@ -951,7 +954,7 @@ where VM: SqPush<SqUserData> + SqVmApi
             let mut vm = unsafe { UnsafeVm::from_handle(hvm).into_friend() };
 
             let top = vm.stack_len();
-            let closure_box: SqUserData = vm.get(top).unwrap();
+            let closure_box: SqUserData = vm.get(top).expect("Failed to get closure box ptr");
 
             let closure: &mut Box<SqFnClosure> = unsafe {
                 let closure_box: usize =  std::ptr::read(closure_box.unwrap().as_ptr() as _) ;

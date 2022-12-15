@@ -131,7 +131,7 @@ fn dll_init() {
                 else { unreachable!() };
             
                 if let dbg::ExecState::Halted = dbg.exec_state() {
-                    std::io::stdin().read_line(&mut arg_str).unwrap();
+                    std::io::stdin().read_line(&mut arg_str).expect("failed to read cmd line");
                     
                     if !arg_str.trim().is_empty() {
                         match front.parse_args(&arg_str) {

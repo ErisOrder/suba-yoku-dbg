@@ -427,7 +427,7 @@ impl SqDebugger
                     None => bail!("no locals at all levels"),
                 }},
             Ok(r) => bail!("{r:?}: expected locals"),
-            Err(e) => bail!("{e}")
+            Err(e) => bail!(e)
         }
     }
     
@@ -442,7 +442,7 @@ impl SqDebugger
             match self.receiver.recv_timeout(RECV_TIMEOUT) {
                 Ok(DebugResp::EvalResult(res)) => Ok(res),
                 Ok(r) => bail!("{r:?}: expected eval result"),
-                Err(e) => bail!("{e}")
+                Err(e) => bail!(e)
             }
         } else {
             Ok("ok".into())
@@ -460,7 +460,7 @@ impl SqDebugger
         match self.receiver.recv_timeout(RECV_TIMEOUT) {
             Ok(DebugResp::Backtrace(bt)) => Ok(bt),
             Ok(r) => bail!("{r:?}: expected backtrace"),
-            Err(e) => bail!("{e}")
+            Err(e) => bail!(e)
         }
     }
 
