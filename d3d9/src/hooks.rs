@@ -1,5 +1,4 @@
 use std::{sync::Mutex, ptr::addr_of_mut, sync::atomic::{self, AtomicBool}};
-use std::collections::HashMap;
 use dynasmrt::{dynasm, DynasmApi, AssemblyOffset};
 use log::debug;
 use region::Protection;
@@ -293,11 +292,11 @@ fn register_test_functions(vm: &mut SafeVm) {
     
     vm.register_function("TestTable", test_table);
     #[sqfn]
-    fn test_table(input: HashMap<DynSqVar, DynSqVar>) -> HashMap<DynSqVar, DynSqVar> {
+    fn test_table(input: IndexMap<DynSqVar, DynSqVar>) -> IndexMap<DynSqVar, DynSqVar> {
         for (k, v) in input.into_iter() {
             debug!("table {k:?}: {v:?}");
         }
-        let mut out = HashMap::new();
+        let mut out = IndexMap::new();
         out.insert(DynSqVar::Bool(false), DynSqVar::Bool(true));
         out.insert(DynSqVar::String("key".into()), DynSqVar::String("val".into()));
         out.insert(DynSqVar::Integer(2), DynSqVar::Integer(4));

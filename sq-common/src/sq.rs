@@ -1,7 +1,7 @@
 use anyhow::{bail, Context};
 use squirrel2_kaleido_rs::*;
 use util_proc_macro::{set_sqfn_paths, sq_closure};
-use std::{ptr::addr_of_mut, cmp::Ordering, collections::HashMap, hash::Hash, fmt::Write};
+use std::{ptr::addr_of_mut, cmp::Ordering, hash::Hash, fmt::Write};
 use anyhow::{
     Result,
     anyhow
@@ -10,6 +10,7 @@ use anyhow::{
 set_sqfn_paths!(sq_wrap_path = "self");
 
 /// Re-export
+pub use indexmap::IndexMap;
 pub use squirrel2_kaleido_rs::HSQUIRRELVM;
 
 /// Copy foreign C str to owned String
@@ -1097,11 +1098,11 @@ where
     }
 }
 
-impl<VM, K, V> SqPush<HashMap<K, V>> for VM
+impl<VM, K, V> SqPush<IndexMap<K, V>> for VM
 where 
     VM: SqPush<K> + SqPush<V> + SqVmApi, 
 {
-    fn push(&mut self, val: HashMap<K, V>) -> Result<()> {
+    fn push(&mut self, val: IndexMap<K, V>) -> Result<()> {
         self.new_table();
 
         for (key, val) in val.into_iter() {
@@ -1115,17 +1116,17 @@ where
     }
 }
 
-impl<VM, K, V> SqGet<HashMap<K, V>> for VM
+impl<VM, K, V> SqGet<IndexMap<K, V>> for VM
 where 
     VM: SqGet<K> + SqGet<V> + SqVmApi,
     K: PartialEq + Eq + Hash,
 {
-    fn get(&mut self, idx: SqInteger) -> Result<HashMap<K, V>> {
+    fn get(&mut self, idx: SqInteger) -> Result<IndexMap<K, V>> {
         // Push a reference to a table to the stack top and a null iterator
         self.ref_idx(idx);
         self.push(SqNull)?;
 
-        let mut out = HashMap::new();
+        let mut out = IndexMap::new();
 
         while self.sq_iter_next(-3).is_ok() {
             let val: V = self.get(-1).context("Failed to get table value")?;
@@ -1234,8 +1235,7 @@ pub enum DynSqVar {
     Float(SqFloat),
     Bool(bool),
     String(String),
-    // TODO: Replace HashMap with BTreeMap
-    Table(HashMap<DynSqVar, DynSqVar>),
+    Table(IndexMap<DynSqVar, DynSqVar>),
     Array(Vec<DynSqVar>),
     UserData(SqUserData),
     //UserPointer(???),
