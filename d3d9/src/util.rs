@@ -28,7 +28,7 @@ enum SetCommands {
     }
 }
 
-#[derive(Subcommand, Debug)]
+#[derive(Subcommand, Debug, Clone, Copy)]
 enum BufferCommands {
     /// Create new empty buffer
     #[clap(visible_alias = "n")]
@@ -181,6 +181,14 @@ impl DebuggerFrontend {
         }
     }
 
+    /// Print locals in form
+    /// ```rs
+    /// Level X locals:
+    /// loc: type [= val]
+    /// 
+    /// Level Y locals:
+    /// ...
+    /// ```
     fn print_locals(locals: Vec<SqLocalVarWithLvl>) {
         let mut curr_lvl = 0; // Non-existent
         for SqLocalVarWithLvl { var: SqLocalVar { name, val }, lvl } in locals {
@@ -201,6 +209,7 @@ impl DebuggerFrontend {
         }
     }
 
+    /// Get CLI parser
     fn cli() -> Command {
         // strip out usage
         const PARSER_TEMPLATE: &str = "\
@@ -218,6 +227,7 @@ impl DebuggerFrontend {
         )
     }
 
+    /// Set debugger variable
     fn set_var(var: &SetCommands) {
         match var {
             SetCommands::PrintfHook { active }
@@ -225,6 +235,7 @@ impl DebuggerFrontend {
         }
     }
 
+    /// Pretty-print local variable
     fn examine(dbg: &dbg::SqDebugger, name: &str, level: Option<SqUnsignedInteger>) {
         match dbg.get_locals(level) {
             Ok(locs) => match locs.into_iter().find(|v| v.var.name == name) {
@@ -238,6 +249,7 @@ impl DebuggerFrontend {
         }
     }
 
+    /// Parse breakpoint specification 
     fn add_breakpoint(dbg: &dbg::SqDebugger, spec: &str) {
         let mut bp_proto = dbg::SqBreakpoint::new();
         let spec = spec.split(':').collect::<Vec<_>>();
@@ -288,6 +300,69 @@ impl DebuggerFrontend {
             Err(_) => Ok(scrawl::new()?),
         }
     }
+
+    /// Execute arbitrary script 
+    fn eval_script(&mut self, dbg: &dbg::SqDebugger, debug: bool, buffer: Option<u32>) {
+        if self.during_eval {
+            println!("failed to evaluate: cannot evaluate during evaluation");
+            return;
+        }
+
+        let script = match buffer {
+            Some(num ) if self.buffers.get(num).is_some() => {
+                self.buffers.get(num).unwrap()
+            }, 
+            _ => match Self::edit_buffer(None) {
+                Ok(s) => {
+                    let num = self.buffers.add(s);
+                    self.buffers.get(num).unwrap()
+                },
+                Err(e) => {
+                    println!("failed to open editor: {e}");
+                    return;
+                },
+            },
+        };
+
+        self.during_eval = true;
+
+        match dbg.execute(script.clone(), debug) {
+            Ok(res) => println!("evaluation result: {res}"),
+            Err(e) => println!("failed to evaluate: {e}"),
+        }
+
+        self.during_eval = false;
+    }
+
+    /// Process buffer commands
+    fn manipulate_buffer(&mut self, cmd: BufferCommands) {
+        match cmd {
+            BufferCommands::New => match Self::edit_buffer(None) {
+                Ok(s) =>println!("new buffer number: {}", self.buffers.add(s)),
+                Err(e) => println!("failed to open editor: {e}"),
+            }
+
+            BufferCommands::Delete { num } => self.buffers.delete(num),
+            BufferCommands::Edit { num } => 
+            if let Some(b) = self.buffers.get(num) {
+                match Self::edit_buffer(Some(b)) {
+                    Ok(s) => self.buffers.replace(num, s),
+                    Err(e) => println!("failed to open editor: {e}"),
+                }
+            } else {
+                println!("no such buffer")
+            }
+        
+            BufferCommands::Print { num } => 
+            if let Some(b) = self.buffers.get(num) {
+                println!("{b}");
+            } else {
+                println!("no such buffer")
+            }
+            
+            BufferCommands::List => println!("{}", self.buffers),
+        }
+    }
 }
 
 /// Public methods
@@ -327,64 +402,10 @@ impl DebuggerFrontend {
             Commands::BreakpointClear { num } => dbg.breakpoints().remove(*num),
             Commands::BreakpointList => println!("Breakpoints:\n{}", dbg.breakpoints()),
 
-            Commands::Evaluate { debug , buffer } => {
-                if self.during_eval {
-                    println!("failed to evaluate: cannot evaluate during evaluation");
-                    return;
-                }
+            Commands::Evaluate { debug , buffer } 
+                => self.eval_script(dbg, *debug, *buffer),
 
-                let script = match buffer {
-                    Some(num ) if self.buffers.get(*num).is_some() => {
-                        self.buffers.get(*num).unwrap()
-                    }, 
-                    _ => match Self::edit_buffer(None) {
-                        Ok(s) => {
-                            let num = self.buffers.add(s);
-                            self.buffers.get(num).unwrap()
-                        },
-                        Err(e) => {
-                            println!("failed to open editor: {e}");
-                            return;
-                        },
-                    },
-                };
-
-                self.during_eval = true;
-
-                match dbg.execute(script.clone(), *debug) {
-                    Ok(res) => println!("evaluation result: {res}"),
-                    Err(e) => println!("failed to evaluate: {e}"),
-                }
-
-                self.during_eval = false;
-            }
-
-            Commands::Buffer(cmd) => match cmd {
-                BufferCommands::New => match Self::edit_buffer(None) {
-                    Ok(s) =>println!("new buffer number: {}", self.buffers.add(s)),
-                    Err(e) => println!("failed to open editor: {e}"),
-                }
-
-                BufferCommands::Delete { num } => self.buffers.delete(*num),
-                BufferCommands::Edit { num } => 
-                if let Some(b) = self.buffers.get(*num) {
-                    match Self::edit_buffer(Some(b)) {
-                        Ok(s) => self.buffers.replace(*num, s),
-                        Err(e) => println!("failed to open editor: {e}"),
-                    }
-                } else {
-                    println!("no such buffer")
-                }
-            
-                BufferCommands::Print { num } => 
-                if let Some(b) = self.buffers.get(*num) {
-                    println!("{b}");
-                } else {
-                    println!("no such buffer")
-                }
-                
-                BufferCommands::List => println!("{}", self.buffers),
-            }
+            Commands::Buffer(cmd) => self.manipulate_buffer(*cmd),
 
             Commands::Trace => if let Err(e) = dbg.start_tracing() {
                 println!("trace failed: {e}")

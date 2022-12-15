@@ -79,9 +79,9 @@ pub struct SqStackInfo {
 impl std::fmt::Display for SqStackInfo {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{src}:{func} ({ln})",
-            src = if let Some(src_f) = &self.src_file { src_f } else { "??" },
-            func = if let Some(funcname) = &self.funcname { funcname } else { "??" },
-            ln = if let Some(line) = self.line { line.to_string() } else { "??".into() }
+            src = self.src_file.as_deref().unwrap_or("??"),
+            func = self.funcname.as_deref().unwrap_or("??"),
+            ln = self.line.map_or("??".into(), |l| l.to_string())
         )
     }
 }
@@ -293,8 +293,21 @@ impl SqVmHandle for FriendVm {
     }
 }
 
-pub enum ExecState {
- 
+pub enum SqExecState {
+    Idle,
+    Running,
+    Suspended,
+}
+
+impl From<SqInteger> for SqExecState {
+    fn from(value: SqInteger) -> Self {
+        match value as u32 {
+            SQ_VMSTATE_IDLE => Self::Idle,
+            SQ_VMSTATE_RUNNING => Self::Running,
+            SQ_VMSTATE_SUSPENDED => Self::Suspended,
+            _ => unreachable!(),
+        }
+    }
 }
 
 // TODO: Somehow remove cyclic dependency...
@@ -321,8 +334,9 @@ pub trait SQVm: SqVmErrorHandling {
     // VM functions
 
     /// Returns the execution state of a virtual machine
-    fn get_vm_state(&self) -> ExecState {
-        todo!()
+    #[inline]
+    fn get_vm_state(&mut self) -> SqExecState {
+        unsafe { sq_getvmstate(self.handle()) }.into()
     }
 
     /// Suspends the execution of the vm
@@ -913,11 +927,13 @@ where
     T: SqVmApi + SQVm + SqPush<&'a str> + SqPush<SqFunction>
 {}
 
+/// Trait for pushing values to vm stack
 pub trait SqPush<T> {
     /// Push a value to the vm stack
     fn push(&mut self, val: T) -> Result<()>;
 }
 
+/// Trait for getting value from the vm stack
 pub trait SqGet<T> {
     /// Get value from the vm stack at position `idx`
     /// 
@@ -925,6 +941,7 @@ pub trait SqGet<T> {
     fn get(&mut self, idx: SqInteger) -> Result<T>;
 }
 
+/// Trait for throwing errors to vm
 pub trait SqThrow<T> {
     /// Throw as a SQ exception to the vm
     fn throw(&mut self, throwable: T);
