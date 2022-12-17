@@ -2,6 +2,7 @@ use std::{time::Duration, sync::{Arc, Mutex, MutexGuard}};
 use anyhow::{Result, bail};
 use atomic::{Atomic, Ordering};
 use crossbeam::channel::{bounded, unbounded, Receiver, Sender};
+use serde::{Serialize, Deserialize};
 use crate::sq::*;
 
 
@@ -60,7 +61,7 @@ pub enum DebugResp {
 }
 
 /// Struct for holding breakpoint data. At least 1 condition field must be specified for it to work 
-#[derive(Clone, PartialEq, PartialOrd, Eq, Ord, Debug, Hash)]
+#[derive(Clone, PartialEq, PartialOrd, Eq, Ord, Debug, Hash, Serialize, Deserialize)]
 pub struct SqBreakpoint {
     pub line: Option<SqInteger>,
     pub fn_name: Option<String>,
@@ -161,7 +162,7 @@ impl std::fmt::Display for SqBreakpoint {
     }
 }
 
-#[derive(Clone, PartialEq, PartialOrd, Eq, Ord, Debug, Hash)]
+#[derive(Clone, PartialEq, PartialOrd, Eq, Ord, Debug, Hash, Serialize, Deserialize)]
 pub struct BreakpointStore { 
     store: Vec<SqBreakpoint>,
     counter: u32,
@@ -398,6 +399,11 @@ impl SqDebugger
     /// Get breakpoint store
     pub fn breakpoints(&self) -> MutexGuard<BreakpointStore> {
        self.breakpoints.lock().unwrap()
+    }
+
+    /// Set breakpoint store
+    pub fn set_breakpoints(&self, points: BreakpointStore) {
+        *self.breakpoints.lock().unwrap() = points; 
     }
 
     /// Halt execution by blocking vm on debug hook call

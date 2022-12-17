@@ -14,3 +14,4 @@ util-proc-macro = { workspace = true }
 log = { workspace = true }
 atomic = { workspace = true }
 crossbeam = { workspace = true }
+serde = { workspace = true }

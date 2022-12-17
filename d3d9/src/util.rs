@@ -1,8 +1,15 @@
 use sq_common::{*, dbg::{SqLocalVarWithLvl}};
-use std::sync::atomic;
+use std::{
+    sync::atomic,
+    fs::File,
+};
 use clap::{Subcommand, Command, FromArgMatches};
 use anyhow::Result;
+use serde::{Serialize, Deserialize};
 use crate::hooks;
+
+
+const DEFAULT_STATE_FILENAME: &str = "state.json";
 
 #[derive(clap::ValueEnum, Copy, Clone, Debug)]
 enum BoolVal {
@@ -161,8 +168,28 @@ enum Commands {
     #[default]
     Nop,
 
+    /// Save breakpoints and buffers.
+    Save {
+        /// File to save state.
+        /// If not specified, default file will be used
+        file: Option<String>,
+    },
+
+    /// Load breakpoints and buffers.
+    Load {
+        /// File to load state from.
+        /// If not specified, default file will be used
+        file: Option<String>,
+    },
+
     /// Exit process
     Exit,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+ struct SavedState {
+    buffers: ScriptBuffers,
+    breakpoints: dbg::BreakpointStore,
 }
 
 /// CLI Frontend for SQ debugger
@@ -364,6 +391,20 @@ impl DebuggerFrontend {
             BufferCommands::List => println!("{}", self.buffers),
         }
     }
+
+    /// Save state to file
+    fn save(state: SavedState, path: &str) -> Result<()> {
+        let f = File::create(path)?;
+        serde_json::to_writer_pretty(&f, &state)?;
+        Ok(())
+    }
+
+    /// Load state from file
+    fn load(path: &str) -> Result<SavedState> {
+        let f = File::open(path)?;
+        let state: SavedState = serde_json::from_reader(f)?;
+        Ok(state)
+    }
 }
 
 /// Public methods
@@ -412,6 +453,27 @@ impl DebuggerFrontend {
                 println!("trace failed: {e}")
             }
 
+            Commands::Load { file } => 
+            match Self::load(file.as_deref().unwrap_or(DEFAULT_STATE_FILENAME)) {
+                Ok(SavedState { buffers, breakpoints }) => {
+                    self.buffers = buffers;
+                    dbg.set_breakpoints(breakpoints);
+                },
+                Err(e) => println!("Failed to load state: {e}"),
+            },
+
+            Commands::Save { file } => {
+                let state = SavedState { 
+                    buffers: self.buffers.clone(),
+                    breakpoints: dbg.breakpoints().clone()
+                };
+
+                if let Err(e) = Self::save(state, file.as_deref().unwrap_or(DEFAULT_STATE_FILENAME)) {
+                    println!("Failed to save state: {e}")
+                }
+            }
+
+
             Commands::Set(var) => Self::set_var(var),
             Commands::Nop => (),
             Commands::Exit => std::process::exit(0),
@@ -431,6 +493,7 @@ impl DebuggerFrontend {
 }
 
 /// Struct that holds multiple string with script
+#[derive(Clone, Serialize, Deserialize)]
 struct ScriptBuffers {
     store: Vec<(u32, String)>,
     counter: u32,

@@ -27,6 +27,8 @@ pretty_env_logger = { workspace = true }
 log = { workspace = true }
 atomic = { workspace = true }
 crossbeam = { workspace = true }
+serde_json = { workspace = true }
+serde = { workspace = true }
 squirrel2-kaleido-rs = { workspace = true }
 sq-common = { workspace = true }
 util-proc-macro = { workspace = true }
