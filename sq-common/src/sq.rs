@@ -498,6 +498,31 @@ pub trait SQVm: SqVmErrorHandling {
         Ok(())
     }
 
+    /// Pops a key from the stack and performs a get operation on the object 
+    /// at the position `idx` in the stack, and pushes the result in the stack.
+    /// 
+    /// This call will invoke the delegation system like a normal dereference. 
+    /// It only works on tables, instances, arrays and classes.
+    /// If the function fails nothing will be pushed in the stack.
+    #[inline]
+    fn slot_get(&mut self, idx: SqInteger) -> Result<()> {
+        sq_try!{ self, unsafe { sq_get(self.handle(), idx) } }?;
+        Ok(())
+    }
+
+    /// Pops a key from the stack and performs a get operation on the object 
+    /// at the position `idx` in the stack, and pushes the result in the stack,
+    /// without employing delegation or metamethods.
+    ///  
+    /// It only works on tables, instances, arrays and classes.
+    /// If the function fails nothing will be pushed in the stack.
+    #[inline]
+    fn slot_get_raw(&mut self, idx: SqInteger) -> Result<()> {
+        sq_try!{ self, unsafe { sq_rawget(self.handle(), idx) } }?;
+        Ok(())
+    }
+
+
     /// Pushes in the stack the next key and value of an array, table or class slot. 
     /// 
     /// To start the iteration this function expects a `null` value on top of the stack.
@@ -544,6 +569,15 @@ pub trait SQVm: SqVmErrorHandling {
                 raise_err as _
             ) 
         }}?;
+        Ok(())
+    }
+
+    /// Pushes class of a class instance at position `idx`
+    #[inline]
+    fn get_instance_class(&mut self, idx: SqInteger) -> Result<()> {
+        sq_try! { self,
+            unsafe { sq_getclass(self.handle(), idx) }
+        }?;
         Ok(())
     }
 }
@@ -1248,6 +1282,38 @@ where
 pub type SqTable = IndexMap<DynSqVar, DynSqVar>;
 
 #[derive(Clone, Debug)]
+pub struct SqInstance {
+    pub this: SqTable
+}
+
+impl<VM> SqGet<SqInstance> for VM
+where 
+    VM: SqVmApi + SqGet<SqTable> + SqPush<DynSqVar>
+{
+    fn get(&mut self, idx: SqInteger) -> Result<SqInstance> {
+        // Get instance class table with keys and default values
+        self.get_instance_class(idx)?;
+        let proto: DynSqVar = self.get(-1)?;
+
+        let DynSqVar::Class(mut proto) = proto else { unreachable!() };
+        self.pop(1);
+        // FIXME: Eternal loop possible
+        for (key, val) in &mut proto {
+            // Push class field/method key and get instance value
+            self.push(key.clone())?;
+            self.slot_get_raw(idx - idx.is_negative() as i32)?;
+
+            *val = self.get(-1)?;
+
+            // Clear stack
+            self.pop(1);
+        }
+
+        Ok(SqInstance { this: proto })
+    }
+}
+
+#[derive(Clone, Debug)]
 pub enum DynSqVar {
     Null,
     Integer(SqInteger),
@@ -1256,11 +1322,9 @@ pub enum DynSqVar {
     String(String),
     Table(SqTable),
     Class(SqTable),
+    Instance(SqInstance),
     Array(Vec<DynSqVar>),
     UserData(SqUserData),
-    //UserPointer(???),
-    //Class(SQClass),
-    //Weakref(???)
     Unsupported(SqType)
 } 
 
@@ -1275,6 +1339,7 @@ impl DynSqVar {
             DynSqVar::String(_) => SqType::String,
             DynSqVar::Table(_) => SqType::Table,
             DynSqVar::Class(_) => SqType::Class,
+            DynSqVar::Instance(_) => SqType::Instance,
             DynSqVar::Array(_) => SqType::Array,
             DynSqVar::UserData(_) => SqType::UserData,
             DynSqVar::Unsupported(t) => *t,
@@ -1300,9 +1365,12 @@ impl DynSqVar {
             Self::String(s) => write!(f, "\"{s}\""),
 
             Self::Table(map)
-            | Self::Class(map) => {
-                if self.get_type() == SqType::Class {
-                    write!(f, "class ")?;
+            | Self::Class(map)
+            | Self::Instance( SqInstance { this: map } ) => {
+                match self.get_type() {
+                    SqType::Class => write!(f, "class ")?,
+                    SqType::Instance => write!(f, "instance ")?,
+                    _ => ()
                 }
 
                 if map.is_empty() {
@@ -1457,6 +1525,7 @@ where
             SqType::String => Ok(DynSqVar::String(self.get(idx)?)),
             SqType::Table => Ok(DynSqVar::Table(self.get(idx)?)),
             SqType::Class => Ok(DynSqVar::Class(self.get(idx)?)),
+            SqType::Instance => Ok(DynSqVar::Instance(self.get(idx)?)),
             SqType::Array => Ok(DynSqVar::Array(self.get(idx)?)),
             SqType::Float => Ok(DynSqVar::Float(self.get(idx)?)),
             SqType::Bool => Ok(DynSqVar::Bool(self.get(idx)?)),

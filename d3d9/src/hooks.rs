@@ -267,7 +267,8 @@ fn register_test_functions(vm: &mut SafeVm) {
             DynSqVar::Float(f) => format!("Float {f}"),
             DynSqVar::Bool(b) => format!("Bool {b}"),
             DynSqVar::Table(t) => format!("Table {t:?}"),
-            DynSqVar::Class(inst) => format!("Instance {inst:?}"),
+            DynSqVar::Class(cls) => format!("Class {cls:?}"),
+            DynSqVar::Instance(inst) => format!("Instance {inst:?}"),
             DynSqVar::UserData(u) => format!("UserData {u:?}"),
             DynSqVar::Unsupported(other) => format!("{other:?}")
         };
@@ -359,5 +360,11 @@ fn register_test_functions(vm: &mut SafeVm) {
     fn test_hexdump_userdata() -> Vec<Vec<SqUserData>> {
         let vec: Vec<_> = "hexdump test string that is 65 bytes, 5 rows in hexdump form long".as_bytes().into();
         vec![vec![vec.into()]]
+    }
+
+    vm.register_function("DebugInst", dbg_instance);
+    #[sqfn] 
+    fn dbg_instance(inst: SqInstance) {
+        debug!("{inst:#?}");
     }
 }
