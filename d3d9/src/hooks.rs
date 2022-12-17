@@ -267,6 +267,7 @@ fn register_test_functions(vm: &mut SafeVm) {
             DynSqVar::Float(f) => format!("Float {f}"),
             DynSqVar::Bool(b) => format!("Bool {b}"),
             DynSqVar::Table(t) => format!("Table {t:?}"),
+            DynSqVar::Class(inst) => format!("Instance {inst:?}"),
             DynSqVar::UserData(u) => format!("UserData {u:?}"),
             DynSqVar::Unsupported(other) => format!("{other:?}")
         };

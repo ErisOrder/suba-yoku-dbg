@@ -291,13 +291,14 @@ impl DebuggerFrontend {
     /// Create or edit buffer
     fn edit_buffer(prev: Option<&str>) -> Result<String> {
         match scrawl::editor::new()
-        .editor("nvim")
-        .extension(".nut")
-        .contents(prev.unwrap_or_default())
-        .open() 
+            .editor("nvim")
+            .extension(".nut")
+            .contents(prev.unwrap_or_default())
+            .open() 
         {
             Ok(s) => Ok(s),
-            Err(_) => Ok(scrawl::new()?),
+            // Try to open default editor
+            Err(_) => Ok(scrawl::with(prev.unwrap_or_default())?),
         }
     }
 

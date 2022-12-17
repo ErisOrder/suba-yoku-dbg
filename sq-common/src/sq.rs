@@ -1245,6 +1245,8 @@ where
     }
 }
 
+pub type SqTable = IndexMap<DynSqVar, DynSqVar>;
+
 #[derive(Clone, Debug)]
 pub enum DynSqVar {
     Null,
@@ -1252,7 +1254,8 @@ pub enum DynSqVar {
     Float(SqFloat),
     Bool(bool),
     String(String),
-    Table(IndexMap<DynSqVar, DynSqVar>),
+    Table(SqTable),
+    Class(SqTable),
     Array(Vec<DynSqVar>),
     UserData(SqUserData),
     //UserPointer(???),
@@ -1271,6 +1274,7 @@ impl DynSqVar {
             DynSqVar::Bool(_) => SqType::Bool,
             DynSqVar::String(_) => SqType::String,
             DynSqVar::Table(_) => SqType::Table,
+            DynSqVar::Class(_) => SqType::Class,
             DynSqVar::Array(_) => SqType::Array,
             DynSqVar::UserData(_) => SqType::UserData,
             DynSqVar::Unsupported(t) => *t,
@@ -1289,12 +1293,18 @@ impl DynSqVar {
         const INDENT_INC: usize = 4;
         const HEXDUMP_W: usize = 16;
         match self {
-            DynSqVar::Null => write!(f, "null"),
-            DynSqVar::Integer(i) => write!(f, "{i}"),
-            DynSqVar::Float(flt) => write!(f, "{flt}"),
-            DynSqVar::Bool(b) => write!(f, "{b}"),
-            DynSqVar::String(s) => write!(f, "\"{s}\""),
-            DynSqVar::Table(map) => {
+            Self::Null => write!(f, "null"),
+            Self::Integer(i) => write!(f, "{i}"),
+            Self::Float(flt) => write!(f, "{flt}"),
+            Self::Bool(b) => write!(f, "{b}"),
+            Self::String(s) => write!(f, "\"{s}\""),
+
+            Self::Table(map)
+            | Self::Class(map) => {
+                if self.get_type() == SqType::Class {
+                    write!(f, "class ")?;
+                }
+
                 if map.is_empty() {
                     write!(f, "{{}}")?;
                     return Ok(())
@@ -1310,8 +1320,9 @@ impl DynSqVar {
                 Self::write_spaces(f, indent)?;
                 write!(f, "}}")?;
                 Ok(())
-            },
-            DynSqVar::Array(v) => { 
+            }
+
+            Self::Array(v) => { 
                 if v.is_empty() {
                     write!(f, "[]")?;
                     return Ok(())
@@ -1326,9 +1337,9 @@ impl DynSqVar {
                 Self::write_spaces(f, indent)?;
                 write!(f, "]")?;
                 Ok(())
-            },
+            }
             // Hexdump-like
-            DynSqVar::UserData(u) => {
+            Self::UserData(u) => {
                 if u.0.is_empty() {
                     write!(f, "[]")?;
                     return Ok(())
@@ -1356,8 +1367,9 @@ impl DynSqVar {
                 Self::write_spaces(f, indent)?;
                 write!(f, "]")?;
                 Ok(())
-            },
-            DynSqVar::Unsupported(t) => write!(f, "{t:?}<ADDR>"),
+            }
+
+            Self::Unsupported(t) => write!(f, "{t:?}<ADDR>"),
         }
     }
 }
@@ -1371,13 +1383,12 @@ impl std::fmt::Display for DynSqVar {
 impl PartialEq for DynSqVar {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
+            (Self::Null, Self::Null) => true,
             (Self::Integer(l0), Self::Integer(r0)) => l0 == r0,
-            (Self::Float(_), Self::Float(_)) => unimplemented!(),
             (Self::Bool(l0), Self::Bool(r0)) => l0 == r0,
             (Self::String(l0), Self::String(r0)) => l0 == r0,
-            (Self::Table(_), Self::Table(_)) => unimplemented!(),
             (Self::Array(l0), Self::Array(r0)) => l0 == r0,
-            _ => core::mem::discriminant(self) == core::mem::discriminant(other),
+            _ => false,
         }
     }
 }
@@ -1387,13 +1398,11 @@ impl Eq for DynSqVar {}
 impl PartialOrd for DynSqVar {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         match (self, other) {
-            (DynSqVar::Null, DynSqVar::Null) => Some(Ordering::Equal),
-            (DynSqVar::Integer(l), DynSqVar::Integer(r)) => l.partial_cmp(r),
-            (DynSqVar::Float(_), DynSqVar::Float(_)) => None,
-            (DynSqVar::Bool(l), DynSqVar::Bool(r)) => l.partial_cmp(r),
-            (DynSqVar::String(l), DynSqVar::String(r)) => l.partial_cmp(r),
-            (DynSqVar::Table(_), DynSqVar::Table(_)) => None,
-            (DynSqVar::Array(l), DynSqVar::Array(r)) => l.partial_cmp(r),
+            (Self::Null, Self::Null) => Some(Ordering::Equal),
+            (Self::Integer(l), Self::Integer(r)) => l.partial_cmp(r),
+            (Self::Bool(l), Self::Bool(r)) => l.partial_cmp(r),
+            (Self::String(l), Self::String(r)) => l.partial_cmp(r),
+            (Self::Array(l), Self::Array(r)) => l.partial_cmp(r),
             _ => None
         }
     }
@@ -1402,15 +1411,13 @@ impl PartialOrd for DynSqVar {
 impl Hash for DynSqVar {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         match self {
-            DynSqVar::Integer(i) => i.hash(state),
-            DynSqVar::Float(_) => unimplemented!(),
-            DynSqVar::Bool(b) => b.hash(state),
-            DynSqVar::String(s) => s.hash(state),
-            DynSqVar::Table(_) => unimplemented!(),
-            DynSqVar::Array(a) => a.hash(state),
-            DynSqVar::UserData(u) => u.hash(state),
-            DynSqVar::Null => core::mem::discriminant(self).hash(state),
-            DynSqVar::Unsupported(_) => unimplemented!()
+            Self::Integer(i) => i.hash(state),
+            Self::Bool(b) => b.hash(state),
+            Self::String(s) => s.hash(state),
+            Self::Array(a) => a.hash(state),
+            Self::UserData(u) => u.hash(state),
+            Self::Null => core::mem::discriminant(self).hash(state),
+            _ => unimplemented!()
         }
 
     }
@@ -1432,7 +1439,7 @@ where
             DynSqVar::Bool(b) => self.push(b),
             DynSqVar::Table(t) => self.push(t),
             DynSqVar::UserData(u) => self.push(u),
-            DynSqVar::Unsupported(_) => unimplemented!(),
+            _ => unimplemented!(),
         }
     }
 }
@@ -1449,6 +1456,7 @@ where
             SqType::Integer => Ok(DynSqVar::Integer(self.get(idx)?)),
             SqType::String => Ok(DynSqVar::String(self.get(idx)?)),
             SqType::Table => Ok(DynSqVar::Table(self.get(idx)?)),
+            SqType::Class => Ok(DynSqVar::Class(self.get(idx)?)),
             SqType::Array => Ok(DynSqVar::Array(self.get(idx)?)),
             SqType::Float => Ok(DynSqVar::Float(self.get(idx)?)),
             SqType::Bool => Ok(DynSqVar::Bool(self.get(idx)?)),
