@@ -690,15 +690,17 @@ where Self: Sized
     /// 
     /// Free variables are treated as local variables, and will be returned
     /// as they would be at the base of the stack, just before the real local variable
-    fn get_local(&mut self, level: SqUnsignedInteger, idx: SqUnsignedInteger, max_depth: Option<u32>) -> Result<SqLocalVar> {
+    /// 
+    /// Returns `None` if local on specified `idx` and `level` doesn't exist 
+    fn get_local(&mut self, level: SqUnsignedInteger, idx: SqUnsignedInteger, max_depth: Option<u32>) -> Result<Option<SqLocalVar>> {
         let ptr = unsafe { sq_getlocal(self.handle(), level, idx) };
         if ptr != 0 as _ {
             let name = unsafe { cstr_to_string(ptr) };
             let val = self.get_constrain(-1, max_depth)?;
             self.pop(1);
-            Ok(SqLocalVar{ name, val })
+            Ok(Some(SqLocalVar{ name, val }))
         } else {
-            bail!("Failed to get name of local at lvl: {level} idx: {idx}: no local");
+            Ok(None)
         }
     }
 

@@ -263,10 +263,16 @@ impl SqDebugger
 
         // Attached debugger will receive messages and respond to them
         dbg.vm.set_debug_hook(move |e, vm| {
+            
+            // if debugging disabled during hook call
+            if !debugging {
+                return;
+            }
 
             let bp = breakpoints.lock().unwrap()
                 .match_event(&e)
                 .cloned();
+
 
             // If VM was running and ran into breakpoint, halt it 
             let state = if bp.is_some() {
@@ -287,11 +293,6 @@ impl SqDebugger
                 if state == ExecState::Halted {
                     tracing = false;
                 }
-            }
-            
-            // if debugging disabled during hook call
-            if !debugging {
-                return;
             }
 
             loop {
@@ -334,7 +335,7 @@ impl SqDebugger
 
                         for lvl in lvl..stack_size {
                             let mut idx = 0;
-                            while let Ok(loc) = vm.get_local(lvl, idx, Some(depth)) {
+                            while let Ok(Some(loc)) = vm.get_local(lvl, idx, Some(depth)) {
                                 v.push(SqLocalVarWithLvl { var: loc, lvl });
                                 idx += 1;
                             }

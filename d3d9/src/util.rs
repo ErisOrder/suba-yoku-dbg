@@ -95,7 +95,9 @@ enum Commands {
     Examine {
         /// Dot-separated path to target variable. 
         /// 
-        /// e.g. this.tableX.instanceY.target or this.arrayX.42
+        /// e.g. `this.tableX.instanceY.target` or `this.arrayX.42`.
+        /// 
+        /// Also you can prefix path with call stack level like this: `1.this.varX`.
         target: String,
 
         /// Specify level of call stack.
@@ -112,7 +114,7 @@ enum Commands {
         /// - 2 - expand this container and all children
         /// 
         /// - 3.. - and so on
-        #[clap(short, long, default_value = "2")]  
+        #[clap(short, long, default_value = "1")]  
         depth: u32
     },
 
@@ -276,13 +278,91 @@ impl DebuggerFrontend {
         }
     }
 
-    /// Pretty-print local variable
-    fn examine(dbg: &dbg::SqDebugger, name: &str, level: Option<SqUnsignedInteger>, depth: SqUnsignedInteger) {
+    /// Match dot-separated path in container recursively
+    fn match_local_path<'a, I>(mut path: I, root: &DynSqVar) -> Option<&DynSqVar>
+    where I: Iterator<Item = &'a str> + Clone {
+        let Some(key) = path.next() else {
+            return None;
+        };
+
+        let index: Option<SqInteger> = key.parse().ok();
+        
+
+        let child = match root {
+            DynSqVar::Table(map)
+            | DynSqVar::Class(map)
+            | DynSqVar::Instance(SqInstance { this: map }) => {
+                if let Some(idx) = index {
+                    map.iter().find(|(k, _)| {
+                        matches!(k, DynSqVar::Integer(i) if *i == idx)
+                        || matches!(k, DynSqVar::String(s) if s == key)
+                    })
+                } else {
+                    map.iter().find(|(k, _)| {
+                        matches!(k, DynSqVar::String(s) if s == key)
+                    })
+                }.map(|(_, v)| v)
+            },
+
+            DynSqVar::Array(v) => 
+            if let Some(idx @ 0..) = index {
+                v.get(idx as usize)
+            } else { None },
+
+            _ => None,
+        };
+
+        // Peek if path has next segment
+        match (child, path.clone().next()) {
+            (Some(_), None) => child,
+            (Some(next), Some(_)) => Self::match_local_path(path, next),
+            _ => None
+        }
+    }
+
+    // TODO: Make lazily evaluated containers
+    // TODO: Make it possible to match keys with spaces for tables
+    /// Pretty-print local variable, try to find local by it's dot-separated path
+    fn examine(dbg: &dbg::SqDebugger, path: &str, mut level: Option<SqUnsignedInteger>, mut depth: u32) {
+        let mut path_seg = path.split('.');
+
+        let mut root_name = path_seg.next().unwrap();
+
+        // Check if first path segment is call stack level
+        if let Ok(lvl) = root_name.parse() { 
+            level = Some(lvl);
+            let Some(root) = path_seg.next() else {
+                println!("Local path not specified, only call stack level");
+                return;
+            };
+            root_name = root;
+        };
+
+        // Add minimal length needed to match path
+        let seg_cnt = path_seg.clone().count();
+        if seg_cnt > 0 {
+            depth += seg_cnt as u32
+        }
+
         match dbg.get_locals(level, depth) {
-            Ok(locs) => match locs.into_iter().find(|v| v.var.name == name) {
-                Some(SqLocalVarWithLvl { var: SqLocalVar { name, val }, ..}) =>
-                    println!("{name}: {typ:?} = {val}", typ = val.get_type()),
-                None => println!("local {name} not found"),
+            Ok(locs) => {
+                for SqLocalVarWithLvl { var: SqLocalVar { name, val }, ..} in locs {
+                    if root_name == name {
+                        // This is target
+                        if path_seg.clone().next().is_none() {
+                            println!("{name}: {typ:?} = {val}", typ = val.get_type());
+                            return;
+                        }
+                        // Try to recursively find target in children
+                        if let Some(target) = Self::match_local_path(path_seg.clone(), &val) {
+                            println!("{path}: {typ:?} = {target}", typ = target.get_type());
+                            return;
+                        }
+                    }
+                }
+
+                println!("failed to match path `{path}`");
+
             },
             Err(e) => {
                 println!("failed to get locals: {e}");
