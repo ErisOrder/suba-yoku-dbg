@@ -21,7 +21,8 @@ pub enum DebugMsg {
     Step,
     Backtrace,
     Trace,
-    Locals(Option<SqUnsignedInteger>),
+    /// Level, Depth
+    Locals(Option<SqUnsignedInteger>, SqUnsignedInteger),
     Eval(String, bool),
 }
 
@@ -318,7 +319,7 @@ impl SqDebugger
                         break;
                     }
 
-                    DebugMsg::Locals(lvl_opt) => 'locals: {
+                    DebugMsg::Locals(lvl_opt, depth) => 'locals: {
                         let stack_size = vm.call_stack_len() as u32;
 
                         // Store all locals if level isn`t specified  
@@ -333,7 +334,7 @@ impl SqDebugger
 
                         for lvl in lvl..stack_size {
                             let mut idx = 0;
-                            while let Ok(loc) = vm.get_local(lvl, idx) {
+                            while let Ok(loc) = vm.get_local(lvl, idx, Some(depth)) {
                                 v.push(SqLocalVarWithLvl { var: loc, lvl });
                                 idx += 1;
                             }
@@ -421,9 +422,16 @@ impl SqDebugger
     /// 
     /// May be pretty expensive
     /// 
-    /// If `lvl` is `None`, return locals gathered from all levels
-    pub fn get_locals(&self, lvl: Option<SqUnsignedInteger>) -> Result<Vec<SqLocalVarWithLvl>> {
-        self.sender.send(DebugMsg::Locals(lvl))?;
+    /// Args:
+    /// - `lvl` - if `None`, return locals gathered from all levels.
+    /// 
+    /// - `depth` - Depth of eager containers (table, array, etc.) expansion.
+    ///   - 0 - do not expand.
+    ///   - 1 - expand this container.
+    ///   - 2 - expand this container and all children
+    ///   - 3.. - and so on
+    pub fn get_locals(&self, lvl: Option<SqUnsignedInteger>, depth: SqUnsignedInteger) -> Result<Vec<SqLocalVarWithLvl>> {
+        self.sender.send(DebugMsg::Locals(lvl, depth))?;
         match self.receiver.recv_timeout(RECV_TIMEOUT) {
             Ok(DebugResp::Locals(loc)) => 
                 if let Some(loc) = loc {

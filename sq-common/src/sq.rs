@@ -171,6 +171,18 @@ pub enum SqType {
     WeakRef,
 }
 
+impl SqType {
+    /// Is type that can contain other types
+    pub fn is_complex(&self) -> bool {
+        !matches!(self, SqType::Null
+            | SqType::Integer
+            | SqType::String
+            | SqType::Float
+            | SqType::Bool
+            | SqType::UserPointer)
+    }
+}
+
 #[derive(Copy, Clone, PartialEq, PartialOrd, Eq, Ord, Debug, Hash)]
 pub struct SqNull;
 
@@ -678,15 +690,15 @@ where Self: Sized
     /// 
     /// Free variables are treated as local variables, and will be returned
     /// as they would be at the base of the stack, just before the real local variable
-    fn get_local(&mut self, level: SqUnsignedInteger, idx: SqUnsignedInteger) -> Result<SqLocalVar> {
+    fn get_local(&mut self, level: SqUnsignedInteger, idx: SqUnsignedInteger, max_depth: Option<u32>) -> Result<SqLocalVar> {
         let ptr = unsafe { sq_getlocal(self.handle(), level, idx) };
         if ptr != 0 as _ {
             let name = unsafe { cstr_to_string(ptr) };
-            let val = self.get(-1)?;
+            let val = self.get_constrain(-1, max_depth)?;
             self.pop(1);
             Ok(SqLocalVar{ name, val })
         } else {
-            bail!("Failed to get name of local at lvl: {level} idx: {idx}");
+            bail!("Failed to get name of local at lvl: {level} idx: {idx}: no local");
         }
     }
 
@@ -967,12 +979,25 @@ pub trait SqPush<T> {
     fn push(&mut self, val: T) -> Result<()>;
 }
 
-/// Trait for getting value from the vm stack
+/// Trait for getting values from the vm stack
 pub trait SqGet<T> {
+    /// Get value from the vm stack at position `idx`.
+    /// 
+    /// if `idx` < 0, count from the top, else from the stack bottom.
+    /// 
+    /// Limit containers' recursion with `max_depth`.
+    /// 
+    /// This method mainly exists to prevent eternal recursion of self-referential containers.
+    fn get_constrain(&mut self, idx: SqInteger, max_depth: Option<u32>) -> Result<T>;
+     
     /// Get value from the vm stack at position `idx`
     /// 
     /// if `idx` < 0, count from the top, else from the stack bottom
-    fn get(&mut self, idx: SqInteger) -> Result<T>;
+    /// 
+    /// Do not limit recursion
+    fn get(&mut self, idx: SqInteger) -> Result<T> {
+        self.get_constrain(idx, None)
+    }
 }
 
 /// Trait for throwing errors to vm
@@ -1057,7 +1082,7 @@ impl<T: SqVmApi> SqPush<SqInteger> for T {
 
 impl<T: SqVmApi> SqGet<SqInteger> for T {
     #[inline]
-    fn get(&mut self, idx: SqInteger) -> Result<SqInteger> {
+    fn get_constrain(&mut self, idx: SqInteger, _: Option<u32>) -> Result<SqInteger> {
         unsafe { self.get_integer(idx) }
     }
 }
@@ -1080,7 +1105,7 @@ impl<T: SqVmApi> SqPush<&str> for T {
 
 // TODO: Use get_size() to make this more safe
 impl<T: SqVmApi> SqGet<String> for T {
-    fn get(&mut self, idx: SqInteger) -> Result<String> {
+    fn get_constrain(&mut self, idx: SqInteger, _: Option<u32>) -> Result<String> {
         unsafe {
             let ptr = self.get_string(idx)?;
             Ok(cstr_to_string(ptr as _))
@@ -1100,7 +1125,7 @@ impl<T: SqVmApi> SqPush<SqNull> for T {
 /// For type safety
 impl<T: SqVmApi> SqGet<SqNull> for T {
     #[inline]
-    fn get(&mut self, idx: SqInteger) -> Result<SqNull> {
+    fn get_constrain(&mut self, idx: SqInteger, _: Option<u32>) -> Result<SqNull> {
         match self.get_type(idx) {
             SqType::Null => Ok(SqNull),
             other => 
@@ -1130,15 +1155,21 @@ impl<VM, T> SqGet<Vec<T>> for VM
 where 
     VM: SqGet<T> + SqVmApi
 {
-    fn get(&mut self, idx: SqInteger) -> Result<Vec<T>> {
+    fn get_constrain(&mut self, idx: SqInteger, max_depth: Option<u32>) -> Result<Vec<T>> {
+        if matches!(max_depth, Some(depth) if depth == 0) {
+            return Ok(vec![]);
+        }
+
         // Push a reference to an array to the stack top and a null iterator
         self.ref_idx(idx);
         self.push(SqNull)?;
 
         let mut out = vec![];
 
+        let next_depth  = max_depth.map(|d| d - 1);
+
         while self.sq_iter_next(-3).is_ok() {
-            let elem: T = self.get(-1).context("Failed to get array value")?;
+            let elem: T = self.get_constrain(-1, next_depth).context("Failed to get array value")?;
             out.push(elem);
 
             self.pop(2);
@@ -1172,16 +1203,22 @@ where
     VM: SqGet<K> + SqGet<V> + SqVmApi,
     K: PartialEq + Eq + Hash,
 {
-    fn get(&mut self, idx: SqInteger) -> Result<IndexMap<K, V>> {
+    fn get_constrain(&mut self, idx: SqInteger, max_depth: Option<u32>) -> Result<IndexMap<K, V>> {
+        if matches!(max_depth, Some(depth) if depth == 0) {
+            return Ok(IndexMap::new());
+        }
+
         // Push a reference to a table to the stack top and a null iterator
         self.ref_idx(idx);
         self.push(SqNull)?;
 
         let mut out = IndexMap::new();
 
+        let next_depth  = max_depth.map(|d| d - 1);
+
         while self.sq_iter_next(-3).is_ok() {
-            let val: V = self.get(-1).context("Failed to get table value")?;
-            let key: K = self.get(-2).context("Failed to get table key")?;
+            let val: V = self.get_constrain(-1, next_depth).context("Failed to get table value")?;
+            let key: K = self.get_constrain(-2, next_depth).context("Failed to get table key")?;
 
             out.insert(key, val);
 
@@ -1203,7 +1240,7 @@ impl<T: SqVmApi> SqPush<SqFloat> for T {
 
 impl<T: SqVmApi> SqGet<SqFloat> for T {
     #[inline]
-    fn get(&mut self, idx: SqInteger) -> Result<SqFloat> {
+    fn get_constrain(&mut self, idx: SqInteger, _: Option<u32>) -> Result<SqFloat> {
         unsafe { self.get_float(idx) }
     }
 }
@@ -1218,7 +1255,7 @@ impl<T: SqVmApi> SqPush<bool> for T {
 
 impl<T: SqVmApi> SqGet<bool> for T {
     #[inline]
-    fn get(&mut self, idx: SqInteger) -> Result<bool> {
+    fn get_constrain(&mut self, idx: SqInteger, _: Option<u32>) -> Result<bool> {
         unsafe { self.get_bool(idx) }
     }
 }
@@ -1237,7 +1274,7 @@ impl<T: SqVmApi> SqPush<SqUserData> for T {
 }
 
 impl<T: SqVmApi> SqGet<SqUserData> for T {
-    fn get(&mut self, idx: SqInteger) -> Result<SqUserData> {
+    fn get_constrain(&mut self, idx: SqInteger, _: Option<u32>) -> Result<SqUserData> {
         match unsafe { self.get_userdata(idx) } {
             Ok((user_data, _)) => {
                 let out = unsafe {
@@ -1271,10 +1308,10 @@ impl<VM, T> SqGet<Option<T>> for VM
 where
     VM: SqGet<T> + SqVmApi
 {
-    fn get(&mut self, idx: SqInteger) -> Result<Option<T>> {
+    fn get_constrain(&mut self, idx: SqInteger, max_depth: Option<u32>) -> Result<Option<T>> {
         match self.get_type(idx) {
             SqType::Null => Ok(None),
-            _ => Ok(Some(SqGet::<T>::get(self, idx)?))
+            _ => Ok(Some(SqGet::<T>::get_constrain(self, idx, max_depth)?))
         }
     }
 }
@@ -1290,20 +1327,25 @@ impl<VM> SqGet<SqInstance> for VM
 where 
     VM: SqVmApi + SqGet<SqTable> + SqPush<DynSqVar>
 {
-    fn get(&mut self, idx: SqInteger) -> Result<SqInstance> {
+    fn get_constrain(&mut self, idx: SqInteger, max_depth: Option<u32>) -> Result<SqInstance> {
+        if matches!(max_depth, Some(depth) if depth == 0) {
+            return Ok(SqInstance { this: IndexMap::new() });
+        }
+
         // Get instance class table with keys and default values
         self.get_instance_class(idx)?;
-        let proto: DynSqVar = self.get(-1)?;
+        let proto: DynSqVar = self.get_constrain(-1, Some(1))?;
 
-        let DynSqVar::Class(mut proto) = proto else { unreachable!() };
+        let DynSqVar::Class(mut proto) = proto else { bail!("max depth") };
         self.pop(1);
-        // FIXME: Eternal loop possible
+
+        let next_depth = max_depth.map(|d| d - 1);
         for (key, val) in &mut proto {
             // Push class field/method key and get instance value
             self.push(key.clone())?;
             self.slot_get_raw(idx - idx.is_negative() as i32)?;
 
-            *val = self.get(-1)?;
+            *val = self.get_constrain(-1, next_depth)?;
 
             // Clear stack
             self.pop(1);
@@ -1325,24 +1367,24 @@ pub enum DynSqVar {
     Instance(SqInstance),
     Array(Vec<DynSqVar>),
     UserData(SqUserData),
-    Unsupported(SqType)
+    NotExpanded(SqType)
 } 
 
 impl DynSqVar {
     /// Get variable type
     pub fn get_type(&self) -> SqType {
         match self {
-            DynSqVar::Null => SqType::Null,
-            DynSqVar::Integer(_) => SqType::Integer,
-            DynSqVar::Float(_) => SqType::Float,
-            DynSqVar::Bool(_) => SqType::Bool,
-            DynSqVar::String(_) => SqType::String,
-            DynSqVar::Table(_) => SqType::Table,
-            DynSqVar::Class(_) => SqType::Class,
-            DynSqVar::Instance(_) => SqType::Instance,
-            DynSqVar::Array(_) => SqType::Array,
-            DynSqVar::UserData(_) => SqType::UserData,
-            DynSqVar::Unsupported(t) => *t,
+            Self::Null => SqType::Null,
+            Self::Integer(_) => SqType::Integer,
+            Self::Float(_) => SqType::Float,
+            Self::Bool(_) => SqType::Bool,
+            Self::String(_) => SqType::String,
+            Self::Table(_) => SqType::Table,
+            Self::Class(_) => SqType::Class,
+            Self::Instance(_) => SqType::Instance,
+            Self::Array(_) => SqType::Array,
+            Self::UserData(_) => SqType::UserData,
+            Self::NotExpanded(t) => *t,
         }
     }
 
@@ -1437,7 +1479,7 @@ impl DynSqVar {
                 Ok(())
             }
 
-            Self::Unsupported(t) => write!(f, "{t:?}<ADDR>"),
+            Self::NotExpanded(t) => write!(f, "{t:?}"),
         }
     }
 }
@@ -1518,19 +1560,27 @@ impl<VM> SqGet<DynSqVar> for VM
 where 
     VM: SqVmApi + SqGet<SqNull> 
 {
-    fn get(&mut self, idx: SqInteger) -> Result<DynSqVar> {
+    fn get_constrain(&mut self, idx: SqInteger, max_depth: Option<u32>) -> Result<DynSqVar> {
+        let sq_type = self.get_type(idx);
+
+        // If container, do not expand
+        if matches!(max_depth, Some(depth) if depth == 0 && sq_type.is_complex()) {
+            return Ok(DynSqVar::NotExpanded(sq_type))
+        }
+
+        // Otherwise just pass max_depth without changes
         match self.get_type(idx) {
             SqType::Null => Ok(DynSqVar::Null),
-            SqType::Integer => Ok(DynSqVar::Integer(self.get(idx)?)),
-            SqType::String => Ok(DynSqVar::String(self.get(idx)?)),
-            SqType::Table => Ok(DynSqVar::Table(self.get(idx)?)),
-            SqType::Class => Ok(DynSqVar::Class(self.get(idx)?)),
-            SqType::Instance => Ok(DynSqVar::Instance(self.get(idx)?)),
-            SqType::Array => Ok(DynSqVar::Array(self.get(idx)?)),
-            SqType::Float => Ok(DynSqVar::Float(self.get(idx)?)),
-            SqType::Bool => Ok(DynSqVar::Bool(self.get(idx)?)),
-            SqType::UserData => Ok(DynSqVar::UserData(self.get(idx)?)),
-            other => Ok(DynSqVar::Unsupported(other)),
+            SqType::Integer => Ok(DynSqVar::Integer(self.get_constrain(idx, max_depth)?)),
+            SqType::String => Ok(DynSqVar::String(self.get_constrain(idx, max_depth)?)),
+            SqType::Table => Ok(DynSqVar::Table(self.get_constrain(idx, max_depth)?)),
+            SqType::Class => Ok(DynSqVar::Class(self.get_constrain(idx, max_depth)?)),
+            SqType::Instance => Ok(DynSqVar::Instance(self.get_constrain(idx, max_depth)?)),
+            SqType::Array => Ok(DynSqVar::Array(self.get_constrain(idx, max_depth)?)),
+            SqType::Float => Ok(DynSqVar::Float(self.get_constrain(idx, max_depth)?)),
+            SqType::Bool => Ok(DynSqVar::Bool(self.get_constrain(idx, max_depth)?)),
+            SqType::UserData => Ok(DynSqVar::UserData(self.get_constrain(idx, max_depth)?)),
+            other => Ok(DynSqVar::NotExpanded(other)),
         }
     }
 }

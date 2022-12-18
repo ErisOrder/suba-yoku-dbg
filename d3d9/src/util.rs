@@ -87,19 +87,33 @@ enum Commands {
     Locals {
         /// Level of call stack. Can be found using backtrace.
         /// If not specified, print all
-        level: Option<u32>
+        level: Option<u32>,
     },
 
     /// Print value of local variable
     #[clap(visible_alias = "x")]
     Examine {
-        /// Name of local variable
-        name: String,
+        /// Dot-separated path to target variable. 
+        /// 
+        /// e.g. this.tableX.instanceY.target or this.arrayX.42
+        target: String,
 
         /// Specify level of call stack.
         ///
-        /// If not specified, print first found local
+        /// If not specified, print first found valid path.
         level: Option<SqUnsignedInteger>,
+
+        /// Depth of eager containers (table, array, etc.) expansion.
+        /// 
+        /// - 0 - do not expand.
+        /// 
+        /// - 1 - expand this container.
+        /// 
+        /// - 2 - expand this container and all children
+        /// 
+        /// - 3.. - and so on
+        #[clap(short, long, default_value = "2")]  
+        depth: u32
     },
 
     /// Add new breakpoint
@@ -164,23 +178,23 @@ enum Commands {
     #[command(subcommand)]
     Set(SetCommands),
 
-    /// Stub command for no-operation, does nothing
-    #[default]
-    Nop,
-
     /// Save breakpoints and buffers.
     Save {
         /// File to save state.
         /// If not specified, default file will be used
         file: Option<String>,
     },
-
+    
     /// Load breakpoints and buffers.
     Load {
         /// File to load state from.
         /// If not specified, default file will be used
         file: Option<String>,
     },
+
+    /// Stub command for no-operation, does nothing
+    #[default]
+    Nop,
 
     /// Exit process
     Exit,
@@ -263,8 +277,8 @@ impl DebuggerFrontend {
     }
 
     /// Pretty-print local variable
-    fn examine(dbg: &dbg::SqDebugger, name: &str, level: Option<SqUnsignedInteger>) {
-        match dbg.get_locals(level) {
+    fn examine(dbg: &dbg::SqDebugger, name: &str, level: Option<SqUnsignedInteger>, depth: SqUnsignedInteger) {
+        match dbg.get_locals(level, depth) {
             Ok(locs) => match locs.into_iter().find(|v| v.var.name == name) {
                 Some(SqLocalVarWithLvl { var: SqLocalVar { name, val }, ..}) =>
                     println!("{name}: {typ:?} = {val}", typ = val.get_type()),
@@ -432,12 +446,14 @@ impl DebuggerFrontend {
             }
 
             Commands::Locals { level } =>
-            match dbg.get_locals(*level) {
+            match dbg.get_locals(*level, 0) {
                 Ok(locals) => Self::print_locals(locals),
                 Err(e) => println!("failed to get locals: {e}"),
             }
 
-            Commands::Examine { level, name } => Self::examine(dbg, name, *level),
+            Commands::Examine { level, target, depth } 
+                => Self::examine(dbg, target, *level, *depth),
+                
             Commands::BreakpointAdd { spec } => Self::add_breakpoint(dbg, spec),
             Commands::BreakpointEnable { num } => dbg.breakpoints().enable(*num, true),
             Commands::BreakpointDisable { num } => dbg.breakpoints().enable(*num, false),

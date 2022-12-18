@@ -270,7 +270,7 @@ fn register_test_functions(vm: &mut SafeVm) {
             DynSqVar::Class(cls) => format!("Class {cls:?}"),
             DynSqVar::Instance(inst) => format!("Instance {inst:?}"),
             DynSqVar::UserData(u) => format!("UserData {u:?}"),
-            DynSqVar::Unsupported(other) => format!("{other:?}")
+            DynSqVar::NotExpanded(other) => format!("{other:?}")
         };
         debug!("received {s}");
         DynSqVar::Array(vec![
