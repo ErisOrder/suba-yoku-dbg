@@ -2,6 +2,7 @@ use anyhow::{bail, Context};
 use squirrel2_kaleido_rs::*;
 use util_proc_macro::{set_sqfn_paths, sq_closure};
 use std::{ptr::addr_of_mut, cmp::Ordering, hash::Hash, fmt::Write};
+use bitflags::bitflags;
 use anyhow::{
     Result,
     anyhow
@@ -179,7 +180,44 @@ impl SqType {
             | SqType::String
             | SqType::Float
             | SqType::Bool
-            | SqType::UserPointer)
+            | SqType::UserPointer
+        )
+    }
+
+    pub fn is_closure(&self) -> bool {
+        matches!(self, SqType::Closure | SqType::NativeClosure)
+    }
+}
+
+bitflags! {
+    /// Type-checking mask of squirrel native closure
+    pub struct SqTypedArgMask: u32 { 
+        const Any = 0xFFFFFFFF;
+        const Null = _RT_NULL;
+        const Integer = _RT_INTEGER;
+        const Float = _RT_FLOAT;
+        const String = _RT_STRING;
+        const Table = _RT_TABLE;
+        const Array = _RT_ARRAY;
+        const Userdata = _RT_USERDATA;
+        const Closure = _RT_CLOSURE | _RT_NATIVECLOSURE;
+        const Bool = _RT_BOOL;
+        const Generator = _RT_GENERATOR;
+        const Userpointer = _RT_USERPOINTER;
+        const Thread = _RT_THREAD;
+        const Instance = _RT_INSTANCE;
+        const Class = _RT_CLASS;
+        const Weakref = _RT_WEAKREF;
+    }
+}
+
+impl std::fmt::Display for SqTypedArgMask {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.is_all() {
+            write!(f, "Any")
+        } else {
+            write!(f, "{self:?}")
+        }
     }
 }
 
@@ -342,7 +380,8 @@ pub trait SqVmErrorHandling: SqVmHandle + SqGet<String> {
 }
 
 /// Main SQVM trait
-pub trait SQVm: SqVmErrorHandling {
+pub trait SQVm: SqVmErrorHandling
+where Self: Sized {
     // VM functions
 
     /// Returns the execution state of a virtual machine
@@ -589,6 +628,14 @@ pub trait SQVm: SqVmErrorHandling {
     fn get_instance_class(&mut self, idx: SqInteger) -> Result<()> {
         sq_try! { self,
             unsafe { sq_getclass(self.handle(), idx) }
+        }?;
+        Ok(())
+    }
+
+    /// Push info table of closure on stack index `idx` 
+    fn get_closure_info(&mut self, idx: SqInteger) -> Result<()> {
+        sq_try! { self,
+            unsafe { sq_closure_getinfos(self.handle(), idx) } 
         }?;
         Ok(())
     }
@@ -1357,6 +1404,98 @@ where
     }
 }
 
+// TODO: Get outer values 
+#[derive(Clone, Debug)]
+pub struct SqClosureInfo {
+    name: Option<String>,
+    args: Vec<String>,
+    src: Option<String>,
+}
+
+impl<VM> SqGet<SqClosureInfo> for VM
+where 
+    VM: SqVmApi + SqGet<SqTable> 
+{
+    fn get_constrain(&mut self, idx: SqInteger, _: Option<u32>) -> Result<SqClosureInfo> {
+        self.get_closure_info(idx)?;
+
+        // Parameters are 1d array of strings
+        let table: IndexMap<String, DynSqVar> = self.get_constrain(-1, Some(2))?;
+        self.pop(1);
+
+        let mut info = SqClosureInfo { name: None, args: vec![], src: None };
+
+        for (key, val) in table {
+            match key.as_str() {
+                "name" => if let DynSqVar::String(n) = val {
+                    info.name = Some(n);
+                },
+                "parameters" => if let DynSqVar::Array(v) = val {
+                    for arg in v {
+                        let DynSqVar::String(arg) = arg else { unreachable!() };
+                        info.args.push(arg)
+                    }
+                }
+                "src" => if let DynSqVar::String(n_src) = val {
+                    info.src = Some(n_src)
+                }
+                _ => ()
+            }
+        }
+
+        Ok(info)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct SqNativeClosureInfo {
+    name: Option<String>,
+    arg_types: Vec<SqTypedArgMask>,
+}
+
+impl<VM> SqGet<SqNativeClosureInfo> for VM
+where 
+    VM: SqVmApi + SqGet<SqTable>  
+{
+    fn get_constrain(&mut self, idx: SqInteger, _: Option<u32>) -> Result<SqNativeClosureInfo> {
+        self.get_closure_info(idx)?;
+
+        // Argument types are 1d array of integers
+        let table: IndexMap<String, DynSqVar> = self.get_constrain(-1, Some(2))?;
+        self.pop(1);
+
+        let mut info = SqNativeClosureInfo { name: None, arg_types: vec![] };
+
+        for (key, val) in table {
+            match key.as_str() {
+                "name" => if let DynSqVar::String(n) = val {
+                    info.name = Some(n);
+                },
+                // Fill vector with Any to represent untyped argument
+                "paramscheck" => if let DynSqVar::Integer(nparams) = val {
+                    for _ in 0..nparams {
+                        info.arg_types.push(SqTypedArgMask::Any);
+                    }
+                }
+                "typecheck" => if let DynSqVar::Array(v) = val {
+                    for (idx, mask) in v.into_iter().enumerate() {
+                        let DynSqVar::Integer(mask) = mask else { unreachable!() };
+                        let mask = SqTypedArgMask::from_bits_truncate(mask as u32);
+                        if idx >= info.arg_types.len() {
+                            info.arg_types.push(mask)
+                        } else {
+                            info.arg_types[idx] = mask; 
+                        }
+                    }
+                }
+                _ => ()
+            }
+        }
+
+        Ok(info)
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum DynSqVar {
     Null,
@@ -1369,6 +1508,8 @@ pub enum DynSqVar {
     Instance(SqInstance),
     Array(Vec<DynSqVar>),
     UserData(SqUserData),
+    Closure(SqClosureInfo),
+    NativeClosure(SqNativeClosureInfo),
     NotExpanded(SqType)
 } 
 
@@ -1386,6 +1527,8 @@ impl DynSqVar {
             Self::Instance(_) => SqType::Instance,
             Self::Array(_) => SqType::Array,
             Self::UserData(_) => SqType::UserData,
+            Self::Closure(_) => SqType::Closure,
+            Self::NativeClosure(_) => SqType::Closure,
             Self::NotExpanded(t) => *t,
         }
     }
@@ -1479,6 +1622,34 @@ impl DynSqVar {
                 Self::write_spaces(f, indent)?;
                 write!(f, "]")?;
                 Ok(())
+            }
+
+            Self::Closure(SqClosureInfo { name, args, .. }) => {
+                let name = name.as_deref().unwrap_or("function");
+                write!(f, "closure {name}(")?;
+
+                for (idx, arg) in args.iter().enumerate() {
+                    if idx > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{arg}")?;
+                }
+
+                write!(f, ")")
+            }
+
+            Self::NativeClosure(SqNativeClosureInfo { name, arg_types }) => {
+                let name = name.as_deref().unwrap_or("fn");
+                write!(f, "native {name}(")?;
+                
+                for (idx, arg_type) in arg_types.iter().enumerate() {
+                    if idx > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{arg_type}")?;
+                }
+
+                write!(f, ")")
             }
 
             Self::NotExpanded(t) => write!(f, "{t:?}"),
@@ -1582,6 +1753,8 @@ where
             SqType::Float => Ok(DynSqVar::Float(self.get_constrain(idx, max_depth)?)),
             SqType::Bool => Ok(DynSqVar::Bool(self.get_constrain(idx, max_depth)?)),
             SqType::UserData => Ok(DynSqVar::UserData(self.get_constrain(idx, max_depth)?)),
+            SqType::Closure => Ok(DynSqVar::Closure(self.get_constrain(idx, max_depth)?)),
+            SqType::NativeClosure => Ok(DynSqVar::NativeClosure(self.get_constrain(idx, max_depth)?)),
             other => Ok(DynSqVar::NotExpanded(other)),
         }
     }

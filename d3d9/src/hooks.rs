@@ -270,6 +270,8 @@ fn register_test_functions(vm: &mut SafeVm) {
             DynSqVar::Class(cls) => format!("Class {cls:?}"),
             DynSqVar::Instance(inst) => format!("Instance {inst:?}"),
             DynSqVar::UserData(u) => format!("UserData {u:?}"),
+            DynSqVar::Closure(ci) => format!("Closure {ci:?}"),
+            DynSqVar::NativeClosure(ci) => format!("NativeClosure {ci:?}"),
             DynSqVar::NotExpanded(other) => format!("{other:?}")
         };
         debug!("received {s}");
