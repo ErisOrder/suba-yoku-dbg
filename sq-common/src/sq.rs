@@ -103,6 +103,8 @@ pub type SqFunction = extern "C" fn(HSQUIRRELVM) -> SqInteger;
 /// Safe abstraction for SQFn
 pub type SqFnClosure = dyn FnMut(&mut FriendVm) -> SqInteger + Send; 
 
+pub type SqBoxedClosure = Box<SqFnClosure>;
+
 /// For naming consistency
 pub type SqInteger = SQInteger;
 
@@ -111,6 +113,10 @@ pub type SqUnsignedInteger = SQUnsignedInteger;
 
 /// For naming consistency
 pub type SqFloat = SQFloat;
+
+pub type SqUserPointer<T> = *mut T;
+
+
 
 /// Event that VM debug hook may receive
 #[derive(Clone, PartialEq, PartialOrd, Eq, Ord, Debug, Hash)]
@@ -1085,9 +1091,8 @@ pub trait SqVmAdvanced<'a>: SqVmApi + SQVm + SqPush<&'a str> + SqPush<SqFunction
                     source: cstr_to_string(src),
                 });
 
-                let ptr = Box::leak(err) as *mut _;
-                let data: Vec<_> = (ptr as usize).to_ne_bytes().into();
-                UnsafeVm::from_handle(vm).push(SqUserData::from(data))
+                let ptr = Box::leak(err) as *mut SqCompilerError;
+                UnsafeVm::from_handle(vm).push(ptr)
                     .expect("Failed to push compiler error");
             }
         }
@@ -1100,11 +1105,11 @@ pub trait SqVmAdvanced<'a>: SqVmApi + SQVm + SqPush<&'a str> + SqPush<SqFunction
         };
 
         if compile_res.is_err() {
-            let err_box: SqUserData = self.get(-1).context("Failed to get error userdata")?;
+            let err_box: SqUserPointer<SqCompilerError> = self.get(-1)
+                .context("Failed to get error userdata")?;
 
             let err: Box<SqCompilerError> = unsafe {
-                let err_box: usize = std::ptr::read(err_box.unwrap().as_ptr() as _);
-                Box::from_raw(err_box as *mut _)
+                Box::from_raw(err_box)
             };
 
             // Pop error
@@ -1182,10 +1187,10 @@ impl<T: SqVmErrorHandling> SqThrow<anyhow::Error> for T {
     }
 }
 
-impl<VM> SqPush<Box<SqFnClosure>> for VM
+impl<VM> SqPush<SqBoxedClosure> for VM
 where VM: SqPush<SqUserData> + SqVmApi
 {
-    fn push(&mut self, val: Box<SqFnClosure>) -> Result<()> {
+    fn push(&mut self, val: SqBoxedClosure) -> Result<()> {
         // Indirection to make fat pointer usable through FFI
         let clos_box = Box::new(val); 
 
@@ -1196,7 +1201,7 @@ where VM: SqPush<SqUserData> + SqVmApi
             let top = vm.stack_len();
             let closure_box: SqUserData = vm.get(top).expect("Failed to get closure box ptr");
 
-            let closure: &mut Box<SqFnClosure> = unsafe {
+            let closure: &mut SqBoxedClosure = unsafe {
                 let closure_box: usize =  std::ptr::read(closure_box.unwrap().as_ptr() as _) ;
                 &mut *(closure_box as *mut _)
             };
@@ -1207,13 +1212,13 @@ where VM: SqPush<SqUserData> + SqVmApi
         extern "C" fn release_hook(ptr: SQUserPointer, _: SqInteger) -> SqInteger {
             // Received ptr is pointer to pointer (of former box) to box
             unsafe { 
-                let closure_box: *mut Box<SqFnClosure> = std::ptr::read(ptr as _) ;
+                let closure_box: *mut SqBoxedClosure = std::ptr::read(ptr as _) ;
                 let _ = Box::from_raw(closure_box);
             };
             1
         }
 
-        let raw = Box::leak(clos_box) as *mut _;
+        let raw = Box::leak(clos_box) as *mut SqBoxedClosure;
         let data: Vec<_> = (raw as usize).to_ne_bytes().into();
 
         self.push(SqUserData::from(data)).expect("Failed to push closure box ptr");
@@ -1601,6 +1606,23 @@ where
     }
 }
 
+impl<VM, T> SqGet<SqUserPointer<T>> for VM 
+where VM: SqVmApi
+{
+    fn get_constrain(&mut self, idx: SqInteger, _: Option<u32>) -> Result<SqUserPointer<T>> {
+        unsafe { self.get_userpointer(idx).map(|p| p as *mut T) }
+    }
+}
+
+impl<VM, T> SqPush<SqUserPointer<T>> for VM 
+where VM: SqVmApi 
+{
+    fn push(&mut self, val: SqUserPointer<T>) -> Result<()> {
+        unsafe { self.push_userpointer(val as _) };
+        Ok(())
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum DynSqVar {
     Null,
@@ -1613,10 +1635,14 @@ pub enum DynSqVar {
     Instance(SqInstance),
     Array(Vec<DynSqVar>),
     UserData(SqUserData),
+    UserPointer(SqUserPointer<u8>),
     Closure(SqClosureInfo),
     NativeClosure(SqNativeClosureInfo),
     NotExpanded(SqType)
 } 
+
+// Due to userpointer
+unsafe impl Send for DynSqVar {}
 
 impl DynSqVar {
     /// Get variable type
@@ -1632,6 +1658,7 @@ impl DynSqVar {
             Self::Instance(_) => SqType::Instance,
             Self::Array(_) => SqType::Array,
             Self::UserData(_) => SqType::UserData,
+            Self::UserPointer(_) => SqType::UserPointer,
             Self::Closure(_) => SqType::Closure,
             Self::NativeClosure(_) => SqType::Closure,
             Self::NotExpanded(t) => *t,
@@ -1728,6 +1755,8 @@ impl DynSqVar {
                 write!(f, "]")?;
                 Ok(())
             }
+
+            Self::UserPointer(p) => write!(f, "ptr {p:p}"),
 
             Self::Closure(SqClosureInfo { name, args, .. }) => {
                 let name = name.as_deref().unwrap_or("function");
@@ -1842,7 +1871,9 @@ where
         let sq_type = self.get_type(idx);
 
         // If container, do not expand
-        if matches!(max_depth, Some(depth) if depth == 0 && sq_type.is_complex()) {
+        if matches!(max_depth, Some(depth) 
+            if depth == 0 && sq_type.is_complex() && !sq_type.is_closure()
+        ) {
             return Ok(DynSqVar::NotExpanded(sq_type))
         }
 
@@ -1858,6 +1889,7 @@ where
             SqType::Float => Ok(DynSqVar::Float(self.get_constrain(idx, max_depth)?)),
             SqType::Bool => Ok(DynSqVar::Bool(self.get_constrain(idx, max_depth)?)),
             SqType::UserData => Ok(DynSqVar::UserData(self.get_constrain(idx, max_depth)?)),
+            SqType::UserPointer => Ok(DynSqVar::UserPointer(self.get_constrain(idx, max_depth)?)),
             SqType::Closure => Ok(DynSqVar::Closure(self.get_constrain(idx, max_depth)?)),
             SqType::NativeClosure => Ok(DynSqVar::NativeClosure(self.get_constrain(idx, max_depth)?)),
             other => Ok(DynSqVar::NotExpanded(other)),

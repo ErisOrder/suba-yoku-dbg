@@ -259,22 +259,7 @@ fn register_test_functions(vm: &mut SafeVm) {
     vm.register_function("TestDyn", test_dyn);
     #[sqfn]
     fn test_dyn(d: DynSqVar) -> DynSqVar {
-        let s = match d {
-            DynSqVar::Null => "Null".into(),
-            DynSqVar::Integer(i) => format!("Integer {i}"),
-            DynSqVar::String(s) => format!("String {s}"),
-            DynSqVar::Array(a) => format!("Array {a:?}"),
-            DynSqVar::Float(f) => format!("Float {f}"),
-            DynSqVar::Bool(b) => format!("Bool {b}"),
-            DynSqVar::Table(t) => format!("Table {t:?}"),
-            DynSqVar::Class(cls) => format!("Class {cls:?}"),
-            DynSqVar::Instance(inst) => format!("Instance {inst:?}"),
-            DynSqVar::UserData(u) => format!("UserData {u:?}"),
-            DynSqVar::Closure(ci) => format!("Closure {ci:?}"),
-            DynSqVar::NativeClosure(ci) => format!("NativeClosure {ci:?}"),
-            DynSqVar::NotExpanded(other) => format!("{other:?}")
-        };
-        debug!("received {s}");
+        debug!("received {d}");
         DynSqVar::Array(vec![
             DynSqVar::Integer(9),
             DynSqVar::Null,
