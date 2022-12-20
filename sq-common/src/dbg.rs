@@ -54,11 +54,11 @@ impl std::fmt::Display for DebugEventWithSrc {
 
 pub type SqBacktrace = Vec<SqStackInfo>;
 
-#[derive(Clone, PartialEq, PartialOrd, Eq, Debug, Hash)]
+#[derive(Debug)]
 pub enum DebugResp {
     Backtrace(SqBacktrace),
     Locals(Option<Vec<SqLocalVarWithLvl>>),
-    EvalResult(String),
+    EvalResult(Result<DynSqVar>),
 }
 
 /// Struct for holding breakpoint data. At least 1 condition field must be specified for it to work 
@@ -357,16 +357,8 @@ impl SqDebugger
                         }
 
                         let res = vm.execute_script(script, "eval.nut".into());
-
-                        let res = match res {
-                            Ok(_) => "Ok".into(),
-                            Err(e) => e.to_string(),
-                        };
                         
-                        // TODO: Improve reporting with debug enabled
-                        if !debug {
-                            resp_tx.send(DebugResp::EvalResult(res)).unwrap();
-                        }
+                        resp_tx.send(DebugResp::EvalResult(res)).unwrap();
 
                         debugging = true;
                     }
@@ -446,22 +438,29 @@ impl SqDebugger
         }
     }
     
-    /// Compile and execute arbitrary squirrel script
-    /// 
-    /// Args:
-    /// - `debug` - if `true`, enable debugging of compiled script
-    pub fn execute(&self, script: String, debug: bool) -> Result<String> {
-        self.sender.send(DebugMsg::Eval(script, debug))?;
+    /// Compile and execute arbitrary squirrel script.
+    pub fn execute(&self, script: String) -> Result<DynSqVar> {
+        self.sender.send(DebugMsg::Eval(script, false))?;
 
-        if !debug {
-            match self.receiver.recv_timeout(RECV_TIMEOUT) {
-                Ok(DebugResp::EvalResult(res)) => Ok(res),
-                Ok(r) => bail!("{r:?}: expected eval result"),
-                Err(e) => bail!(e)
-            }
-        } else {
-            Ok("ok".into())
+        match self.receiver.recv_timeout(RECV_TIMEOUT) {
+            Ok(DebugResp::EvalResult(res)) => res,
+            Ok(r) => bail!("{r:?}: expected eval result"),
+            Err(e) => bail!(e)
         }
+    }
+
+    /// Compile and execute arbitrary squirrel script, with debugging enabled.
+    /// 
+    /// Returns closure that will block until debugging is ended and eval result sent
+    pub fn execute_debug(&self, script: String) -> Result<impl Fn() -> Result<DynSqVar>> {
+        self.sender.send(DebugMsg::Eval(script, true))?;
+        let receiver = self.receiver.clone();
+
+        Ok(move || match receiver.recv() {
+            Ok(DebugResp::EvalResult(res)) => res,
+            Ok(r) => bail!("{r:?}: expected eval result"),
+            Err(e) => bail!(e)
+        })
     }
 
     /// Request backtrace from vm thread, where

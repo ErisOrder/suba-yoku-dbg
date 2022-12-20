@@ -448,10 +448,20 @@ impl DebuggerFrontend {
 
         self.during_eval = true;
 
-        match dbg.execute(script.clone(), debug) {
+        let eval_res = |res| match res {
             Ok(res) => println!("evaluation result: {res}"),
+            Err(e) => println!("failed to evaluate: {e}"),  
+        };
+
+        if !debug { 
+            eval_res(dbg.execute(script.clone())) 
+        } 
+        else { match dbg.execute_debug(script.clone()) {
+            // Spawn thread that will wait for eval result
+            Ok(fut) => { std::thread::spawn(move || eval_res(fut())); },
             Err(e) => println!("failed to evaluate: {e}"),
-        }
+        }}
+
 
         self.during_eval = false;
     }

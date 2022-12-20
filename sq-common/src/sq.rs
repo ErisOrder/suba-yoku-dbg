@@ -1053,7 +1053,9 @@ where Self: Sized
 }
 
 /// Advanced rust-wrapped operations
-pub trait SqVmAdvanced<'a>: SqVmApi + SQVm + SqPush<&'a str> + SqPush<SqFunction> + SqGet<SqUserData> { 
+pub trait SqVmAdvanced<'a>: SqVmApi + SQVm + SqPush<&'a str> + SqPush<SqFunction> + SqGet<SqUserData> {
+    // TODO: Add typemask
+    
     /// Bind rust native function to root table of SQVM
     fn register_function(&mut self, name: &'a str, func: SqFunction) {
         self.push_root_table();
@@ -1073,7 +1075,7 @@ pub trait SqVmAdvanced<'a>: SqVmApi + SQVm + SqPush<&'a str> + SqPush<SqFunction
     }
 
     /// Compile and execute arbitrary squirrel script
-    fn execute_script(&mut self, script: String, src_file: String) -> Result<()> {
+    fn execute_script(&mut self, script: String, src_file: String) -> Result<DynSqVar> {
 
         /// This handler will push SqCompilerError ptr to stack as userdata
         extern "C" fn error_handler(
@@ -1120,10 +1122,12 @@ pub trait SqVmAdvanced<'a>: SqVmApi + SQVm + SqPush<&'a str> + SqPush<SqFunction
 
         self.push_root_table();
 
-        unsafe { self.call_closure(1, false, false) }?;
-        // Pop closure
-        self.pop(1);
-        Ok(())
+        unsafe { self.call_closure(1, true, false) }?;
+
+        let ret = self.get_constrain(-1, Some(50))?;
+        // Pop closure and retval
+        self.pop(2);
+        Ok(ret)
     }
 }
 
