@@ -1,7 +1,7 @@
 use anyhow::{bail, Context};
 use squirrel2_kaleido_rs::*;
 use util_proc_macro::{set_sqfn_paths, sq_closure};
-use std::{ptr::addr_of_mut, cmp::Ordering, hash::Hash, fmt::Write};
+use std::{ptr::addr_of_mut, cmp::Ordering, hash::Hash, fmt::Write, marker::PhantomData};
 use bitflags::bitflags;
 use anyhow::{
     Result,
@@ -259,7 +259,7 @@ pub trait SqVmHandle {
     /// 
     /// # Safety
     /// Leaks pointer to vm, but does not consume it.
-    unsafe fn handle(&mut self) -> HSQUIRRELVM;
+    unsafe fn handle(&self) -> HSQUIRRELVM;
 }
 
 /// Safe wrapper around SQVM handle.
@@ -272,7 +272,7 @@ unsafe impl Send for SafeVm {}
 
 impl SqVmHandle for SafeVm {
     #[inline]
-    unsafe fn handle(&mut self) -> HSQUIRRELVM {
+    unsafe fn handle(&self) -> HSQUIRRELVM {
         self.handle
     }
 }
@@ -299,7 +299,7 @@ pub struct UnsafeVm(HSQUIRRELVM);
 
 impl SqVmHandle for UnsafeVm {
     #[inline]
-    unsafe fn handle(&mut self) -> HSQUIRRELVM {
+    unsafe fn handle(&self) -> HSQUIRRELVM {
         self.0
     }
 }
@@ -338,7 +338,7 @@ pub struct FriendVm(HSQUIRRELVM);
 
 impl SqVmHandle for FriendVm {
     #[inline]
-    unsafe fn handle(&mut self) -> HSQUIRRELVM {
+    unsafe fn handle(&self) -> HSQUIRRELVM {
         self.0
     }
 }
@@ -587,11 +587,11 @@ where Self: Sized {
     /// The function will fail when all slots have been iterated
     /// (see Tables and arrays manipulation)
     #[inline]
-    fn sq_iter_next(&mut self, idx: SqInteger) -> Result<()> {
+    fn sq_iter_next(&mut self, idx: SqInteger) -> Option<()> {
         if unsafe { sq_next(self.handle(), idx) } >= 0 {
-            Ok(())
+            Some(())
         } else {
-            bail!("Failed to iterate using iterator at index {idx}")
+            None
         }
     }
 
@@ -639,7 +639,120 @@ where Self: Sized {
         }?;
         Ok(())
     }
+
+
 }
+
+/// Iterator on squirrel array
+pub struct SqArrayIter<'vm, VM, T> 
+where VM: SqVmApi {
+    vm: &'vm mut VM,
+    max_depth: Option<u32>,
+    _type: PhantomData<T>,
+}
+
+impl<VM, T> Drop for SqArrayIter<'_, VM, T>
+where VM: SqVmApi {
+    fn drop(&mut self) {
+        // Pop the null iterator and the reference
+        self.vm.pop(2);
+    }
+}
+
+impl<VM, T> Iterator for SqArrayIter<'_, VM, T>
+where 
+    VM: SqVmApi + SqGet<T>
+{
+    type Item = Result<T>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let next_depth = self.max_depth.map(|d| d - 1);
+        self.vm.sq_iter_next(-3).map(|_| {
+            let elem = self.vm.get_constrain(-1, next_depth);
+            // Pop key-val
+            if elem.is_ok() {
+                self.vm.pop(2);
+            }
+
+            elem.context("Failed to get array value")
+        })
+    }
+}
+
+/// Iterator on squirrel table
+pub struct SqTableIter<'vm, VM, K, V> 
+where VM: SqVmApi {
+    vm: &'vm mut VM,
+    max_depth: Option<u32>,
+    _type: PhantomData<(K, V)>,
+}
+
+impl<VM, K, V> Drop for SqTableIter<'_, VM, K, V>
+where VM: SqVmApi {
+    fn drop(&mut self) {
+        // Pop the null iterator and the reference
+        self.vm.pop(2);
+    }
+}
+
+impl<VM, K, V> Iterator for SqTableIter<'_, VM, K, V>
+where 
+    VM: SqVmApi + SqGet<K> + SqGet<V>
+{
+    type Item = Result<(K, V)>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let next_depth = self.max_depth.map(|d| d - 1);
+        self.vm.sq_iter_next(-3).map(|_| {
+            let val: V = match self.vm.get_constrain(-1, next_depth) {
+                Ok(v) => v,
+                Err(e) => return Err(e.context("Failed to get table value")),
+            };
+
+            let key: K = match self.vm.get_constrain(-2, next_depth) {
+                Ok(k) => k,
+                Err(e) => return Err(e.context("Failed to get table key")),
+            };
+
+            // Pop key-val
+            self.vm.pop(2);
+            Ok((key, val))
+        })
+    }
+}
+
+/// In-place squirrel iterators interface
+pub trait SqVmIterators<'vm>: SqVmApi {
+
+    /// Get rust iterator to squirrel array at index `idx`
+    fn iter_array<T>(
+        &'vm mut self,
+        idx: SqInteger,
+        max_depth: Option<u32>
+    ) -> SqArrayIter<'vm, Self, T> {
+        // Push a reference to an array to the stack top and a null iterator
+        self.ref_idx(idx);
+        self.push(SqNull).ok();
+
+        SqArrayIter { vm: self, max_depth, _type: PhantomData }
+    }
+
+    /// Get rust iterator to squirrel table at index `idx`
+    fn iter_table<K, V>(
+        &'vm mut self,
+        idx: SqInteger,
+        max_depth: Option<u32>
+    ) -> SqTableIter<'vm, Self, K, V> {
+        // Push a reference to an array to the stack top and a null iterator
+        self.ref_idx(idx);
+        self.push(SqNull).ok();
+
+        SqTableIter { vm: self, max_depth, _type: PhantomData }
+    }
+}
+
+
+
 
 #[derive(Clone, PartialEq, PartialOrd, Eq, Debug, Hash)]
 pub struct SqLocalVar {
@@ -1016,6 +1129,7 @@ impl SqVmErrorHandling for FriendVm {}
 impl<T: SqVmErrorHandling> SQVm for T {}
 impl<T: SqVmErrorHandling> SqVmApi for T {}
 impl<T: SqGet<DynSqVar> + SqVmApi> SqVmDebugBasic for T {}
+impl<T: SqVmApi> SqVmIterators<'_> for T {}
 
 impl<'a, T> SqVmAdvanced<'a> for T
 where 
@@ -1209,22 +1323,12 @@ where
             return Ok(vec![]);
         }
 
-        // Push a reference to an array to the stack top and a null iterator
-        self.ref_idx(idx);
-        self.push(SqNull)?;
-
         let mut out = vec![];
-
-        let next_depth  = max_depth.map(|d| d - 1);
-
-        while self.sq_iter_next(-3).is_ok() {
-            let elem: T = self.get_constrain(-1, next_depth).context("Failed to get array value")?;
-            out.push(elem);
-
-            self.pop(2);
+        
+        for elem in self.iter_array(idx, max_depth) {
+            out.push(elem?);
         }
-        // Pop the null iterator and the reference
-        self.pop(2);
+
         Ok(out)
     }
 }
@@ -1257,24 +1361,17 @@ where
             return Ok(IndexMap::new());
         }
 
-        // Push a reference to a table to the stack top and a null iterator
-        self.ref_idx(idx);
-        self.push(SqNull)?;
-
         let mut out = IndexMap::new();
 
-        let next_depth  = max_depth.map(|d| d - 1);
-
-        while self.sq_iter_next(-3).is_ok() {
-            let val: V = self.get_constrain(-1, next_depth).context("Failed to get table value")?;
-            let key: K = self.get_constrain(-2, next_depth).context("Failed to get table key")?;
-
-            out.insert(key, val);
-
-            self.pop(2);
+        for pair in self.iter_table(idx, max_depth) {
+            match pair {
+                Ok((k, v)) => {
+                    out.insert(k, v);
+                },
+                Err(e) => bail!(e),
+            } 
         }
-        // Pop the null iterator and the reference
-        self.pop(2);
+
         Ok(out)
     }
 }
@@ -1417,15 +1514,16 @@ where
     VM: SqVmApi + SqGet<SqTable> 
 {
     fn get_constrain(&mut self, idx: SqInteger, _: Option<u32>) -> Result<SqClosureInfo> {
+        let mut info = SqClosureInfo { name: None, args: vec![], src: None };
+
         self.get_closure_info(idx)?;
 
         // Parameters are 1d array of strings
-        let table: IndexMap<String, DynSqVar> = self.get_constrain(-1, Some(2))?;
-        self.pop(1);
-
-        let mut info = SqClosureInfo { name: None, args: vec![], src: None };
-
-        for (key, val) in table {
+        for pair in self.iter_table(-1, Some(2)) {
+            let (key, val): (String, DynSqVar) = match pair {
+                Ok(kv) => kv,
+                Err(e) => bail!(e),
+            };
             match key.as_str() {
                 "name" => if let DynSqVar::String(n) = val {
                     info.name = Some(n);
@@ -1443,6 +1541,9 @@ where
             }
         }
 
+        // Pop closure info
+        self.pop(1);
+
         Ok(info)
     }
 }
@@ -1458,15 +1559,16 @@ where
     VM: SqVmApi + SqGet<SqTable>  
 {
     fn get_constrain(&mut self, idx: SqInteger, _: Option<u32>) -> Result<SqNativeClosureInfo> {
+        let mut info = SqNativeClosureInfo { name: None, arg_types: vec![] };
+
         self.get_closure_info(idx)?;
 
         // Argument types are 1d array of integers
-        let table: IndexMap<String, DynSqVar> = self.get_constrain(-1, Some(2))?;
-        self.pop(1);
-
-        let mut info = SqNativeClosureInfo { name: None, arg_types: vec![] };
-
-        for (key, val) in table {
+        for pair in self.iter_table(-1, Some(2)) {
+            let (key, val): (String, DynSqVar) = match pair {
+                Ok(kv) => kv,
+                Err(e) => bail!(e),
+            };
             match key.as_str() {
                 "name" => if let DynSqVar::String(n) = val {
                     info.name = Some(n);
@@ -1492,6 +1594,9 @@ where
             }
         }
 
+        // Pop closure info
+        self.pop(1);
+        
         Ok(info)
     }
 }
