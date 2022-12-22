@@ -354,4 +354,15 @@ fn register_test_functions(vm: &mut SafeVm) {
     fn dbg_instance(inst: SqInstance) {
         debug!("{inst:#?}");
     }
+
+    vm.register_function("TestObjRef", test_obj_ref);
+    #[sqfn(vm_var = "vm")]
+    fn test_obj_ref() -> SqUnit {
+        let obj = SqObjectRef::get(vm, 2).unwrap();
+        obj.push();
+
+        // To show vm that this fn actually returns something
+        SqUnit
+    }
+
 }

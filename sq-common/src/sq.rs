@@ -1,7 +1,7 @@
 use anyhow::{bail, Context};
 use squirrel2_kaleido_rs::*;
 use util_proc_macro::{set_sqfn_paths, sq_closure};
-use std::{ptr::addr_of_mut, cmp::Ordering, hash::Hash, fmt::Write, marker::PhantomData};
+use std::{ptr::{addr_of_mut, addr_of}, cmp::Ordering, hash::Hash, fmt::Write, marker::PhantomData};
 use bitflags::bitflags;
 use anyhow::{
     Result,
@@ -1131,6 +1131,48 @@ pub trait SqVmAdvanced<'a>: SqVmApi + SQVm + SqPush<&'a str> + SqPush<SqFunction
     }
 }
 
+/// Handling raw objects
+pub trait SqVmObjectHandling: SqVmErrorHandling {
+    /// Adds a reference to an object handler.
+    fn inc_ref(&self, obj: &mut SQObject) {
+        unsafe { sq_addref(self.handle(), addr_of_mut!(*obj)) }
+    }
+
+    /// Remove a reference from an object handler.
+    ///
+    /// Returns `true` if object was deleted and if so, resets object handler to null.
+    fn dec_ref(&self, obj: &mut SQObject) -> bool {
+        (unsafe { sq_release(self.handle(), addr_of_mut!(*obj)) }) != 0
+    }
+
+    /// Initialize object handler.
+    fn obj_init() -> SQObject {
+        let mut obj = unsafe { std::mem::zeroed() };
+        unsafe { sq_resetobject(addr_of_mut!(obj)) };
+        obj
+    }
+
+    /// Gets an object (or it's pointer) from the stack and stores it in a object handler.
+    fn get_stack_obj(&self, idx: SqInteger) -> Result<SQObject> {
+        let mut obj = Self::obj_init();
+        sq_try! { self,
+            unsafe { sq_getstackobj(self.handle(), idx, addr_of_mut!(obj)) }
+        }?;
+        Ok(obj)
+    }
+
+    /// Push an object referenced by an object handler into the stack.
+    fn push_stack_obj(&self, obj: &SQObject) {
+        // Looks like sq_pushobject actually reads not object but ptr to it,
+        // Despite the function signature. WTF?
+        // So this struct's _type field used to pass pointer.
+        let mut stub_wtf: SQObject = unsafe { std::mem::zeroed() }; 
+        stub_wtf._type = addr_of!(*obj) as _;
+        unsafe { sq_pushobject(self.handle(), stub_wtf) }
+    }
+}
+
+
 impl SqVmErrorHandling for SafeVm {}
 impl SqVmErrorHandling for UnsafeVm {}
 impl SqVmErrorHandling for FriendVm {}
@@ -1139,6 +1181,7 @@ impl<T: SqVmErrorHandling> SQVm for T {}
 impl<T: SqVmErrorHandling> SqVmApi for T {}
 impl<T: SqGet<DynSqVar> + SqVmApi> SqVmDebugBasic for T {}
 impl<T: SqVmApi> SqVmIterators<'_> for T {}
+impl<T: SqVmErrorHandling> SqVmObjectHandling for T {}
 
 impl<'a, T> SqVmAdvanced<'a> for T
 where 
@@ -1901,5 +1944,58 @@ where
     }
 }
 
+/// Type that is similar to rust's `()` and can be used for same purposes
+pub struct SqUnit;
+
+impl<VM> SqGet<SqUnit> for VM 
+where VM: SqVmHandle {
+    fn get_constrain(&self, _: SqInteger, _: Option<u32>) -> Result<SqUnit> {
+        Ok(SqUnit)
+    }
+}
+
+impl <VM> SqPush<SqUnit> for VM
+where VM: SqVmHandle {
+    fn push(&self, _: SqUnit) -> Result<()> {
+        Ok(())
+    }
+}
 
 
+/// Strong reference to squirrel vm object with RAII
+pub struct SqObjectRef<'vm, VM>
+where VM: SqVmObjectHandling + 'vm
+{
+    obj: SQObject,
+    vm: &'vm VM
+}
+
+impl<'vm, VM> Drop for SqObjectRef<'vm, VM>
+where VM: SqVmObjectHandling {
+    fn drop(&mut self) {
+        self.vm.dec_ref(&mut self.obj);
+    }
+}
+
+impl<'vm, VM> SqObjectRef<'vm, VM>
+where VM: SqVmObjectHandling {
+    /// Get type of referenced object
+    pub fn get_type(&self) -> SqType {
+        self.obj._type.into()
+    }
+
+    /// Push referenced object back to vm
+    pub fn push(&self) {
+        self.vm.push_stack_obj(&self.obj);
+    }
+
+    /// Get a reference to object on the stack
+    pub fn get(vm: &'vm VM, idx: SqInteger) -> Result<Self> {
+        let mut obj = vm.get_stack_obj(idx)?;
+        vm.inc_ref(&mut obj);
+        Ok(SqObjectRef {
+            obj,
+            vm,
+        })
+    }
+}
