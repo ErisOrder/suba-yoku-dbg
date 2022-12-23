@@ -171,6 +171,11 @@ enum Commands {
 
         /// Choose script buffer to evaluate. If not specified, new buffer will be created.
         buffer: Option<u32>,
+
+        /// Depth of eager returned containers (table, array, etc.) expansion.
+        /// Check `help examine` for more info.
+        #[clap(short, long, default_value = "1")]
+        depth: u32
     },
 
     /// Add, remove, edit and view script buffers
@@ -433,7 +438,13 @@ impl DebuggerFrontend {
     }
 
     /// Execute arbitrary script 
-    fn eval_script(&mut self, dbg: &dbg::SqDebugger, debug: bool, buffer: Option<u32>) {
+    fn eval_script(
+        &mut self,
+        dbg: &dbg::SqDebugger,
+        debug: bool,
+        buffer: Option<u32>,
+        depth: SqUnsignedInteger
+    ) {
         if self.during_eval {
             println!("failed to evaluate: cannot evaluate during evaluation");
             return;
@@ -498,9 +509,9 @@ impl DebuggerFrontend {
         };
 
         if !debug {
-            eval_res(dbg.execute(script, capture))
+            eval_res(dbg.execute(script, capture, depth))
         }
-        else { match dbg.execute_debug(script, capture) {
+        else { match dbg.execute_debug(script, capture, depth) {
             // Spawn thread that will wait for eval result
             Ok(fut) => { std::thread::spawn(move || eval_res(fut())); },
             Err(e) => println!("failed to evaluate: {e}"),
@@ -594,8 +605,8 @@ impl DebuggerFrontend {
             Commands::BreakpointClear { num } => dbg.breakpoints().remove(*num),
             Commands::BreakpointList => println!("Breakpoints:\n{}", dbg.breakpoints()),
 
-            Commands::Evaluate { debug , buffer } 
-                => self.eval_script(dbg, *debug, *buffer),
+            Commands::Evaluate { debug , buffer, depth }
+                => self.eval_script(dbg, *debug, *buffer, *depth),
 
             Commands::Buffer(cmd) => self.manipulate_buffer(*cmd),
 

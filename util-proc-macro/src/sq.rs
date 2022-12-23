@@ -251,11 +251,10 @@ pub fn sqfn_impl(
         let top = #vm_ident.stack_len();
         let norm_argc = #norm_argc as i32;
 
-        // Stack layout (class method with 2 args): 
-        // 1: this TODO: Check if all functions has class or table instance
+        // Stack layout (function with 2 args):
+        // 1: this (bound env)
         // 2: arg0
         // 3: arg1 <-- top
-        // ?: popped userdata with method ptr
         // technically, all functions has varargs by default
 
         #(  // normal (rust) args indexes: 2..2+norm_argc

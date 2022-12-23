@@ -25,6 +25,8 @@ pub struct SqScriptDesc {
     /// Local variables to be captured
     capture: Vec<SqCaptureLocal>,
     script: String,
+    /// Return value expansion depth
+    depth: SqUnsignedInteger,
     debug: bool,
 }
 
@@ -358,7 +360,7 @@ impl SqDebugger
 
                         resp_tx.send(DebugResp::Locals(if v.is_empty() { None } else { Some(v) })).unwrap();
                     },
-                    DebugMsg::Eval(SqScriptDesc { capture, script, debug }) => 'eval: {
+                    DebugMsg::Eval(SqScriptDesc { capture, script, depth, debug }) => 'eval: {
 
                         println!("{capture:?}");
 
@@ -414,7 +416,7 @@ impl SqDebugger
                             // vm.bind_env(-2)?;
                             // vm.push_root_table();
 
-                            let ret = vm.closure_call(1)?;
+                            let ret = vm.closure_call(1, Some(depth))?;
 
                             // Pop closures
                             vm.pop(2);
@@ -503,11 +505,18 @@ impl SqDebugger
     
     /// Compile and execute arbitrary squirrel script.
     ///
-    /// `capture_locals` is list of locals variables names and levels that will
-    ///  be passed to compiled closure
-    pub fn execute(&self, script: String, capture_locals: Vec<SqCaptureLocal>) -> Result<DynSqVar> {
+    /// Args:
+    /// - `capture_locals` - list of locals variables names and levels that will
+    ///   be passed to compiled closure.
+    /// - `depth` - depth of eager return value expansion
+    pub fn execute(
+        &self,
+        script: String,
+        capture_locals: Vec<SqCaptureLocal>,
+        depth: SqUnsignedInteger
+    ) -> Result<DynSqVar> {
         self.sender.send(DebugMsg::Eval(SqScriptDesc {
-            capture: capture_locals, script, debug: false
+            capture: capture_locals, script, depth, debug: false
         }))?;
 
         match self.receiver.recv_timeout(RECV_TIMEOUT) {
@@ -519,17 +528,20 @@ impl SqDebugger
 
     /// Compile and execute arbitrary squirrel script, with debugging enabled.
     ///
-    /// `capture_locals` is list of locals variables names and levels that will
-    /// be passed to compiled closure
+    /// Args:
+    /// - `capture_locals` - list of locals variables names and levels that will
+    ///   be passed to compiled closure.
+    /// - `depth` - depth of eager return value expansion
     ///
     /// Returns closure that will block until debugging is ended and eval result sent
     pub fn execute_debug(
         &self,
         script: String,
-        capture_locals: Vec<SqCaptureLocal>
+        capture_locals: Vec<SqCaptureLocal>,
+        depth: SqUnsignedInteger
     ) -> Result<impl Fn() -> Result<DynSqVar>> {
         self.sender.send(DebugMsg::Eval(SqScriptDesc {
-            capture: capture_locals, script, debug: true
+            capture: capture_locals, script, depth, debug: true
         }))?;
 
         let receiver = self.receiver.clone();

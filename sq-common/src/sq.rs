@@ -1172,10 +1172,12 @@ pub trait SqVmAdvanced<'a>:
 
     /// Call closure with specified argument count and return result.
     ///
+    /// `depth` is depth of eager return value containers expansion.
+    ///
     /// Returns [SqNull] if closure does not return anything.
-    fn closure_call(&self, argc: SqInteger) -> Result<DynSqVar> {
+    fn closure_call(&self, argc: SqInteger, depth: Option<SqUnsignedInteger>) -> Result<DynSqVar> {
         unsafe { self.call_closure(argc, true, false) }?;
-        let ret = self.get_constrain(-1, Some(16))?;
+        let ret = self.get_constrain(-1, depth)?;
 
         // Pop retval
         self.pop(1);
