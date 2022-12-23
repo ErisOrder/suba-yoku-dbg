@@ -646,7 +646,19 @@ where Self: Sized {
         Ok(())
     }
 
-
+    /// Pops an object from the stack (must be a table, instance or class) clones
+    /// the closure at position `idx` in the stack and sets the popped object
+    /// as environment of the cloned closure.
+    ///
+    /// Then pushes the new cloned closure on top of the stack
+    ///
+    /// The cloned closure holds the environment object as weak reference.
+    fn bind_env(&self, idx: SqInteger) -> Result<()> {
+        sq_try!{ self,
+            unsafe { sq_bindenv(self.handle(), idx) }
+        }?;
+        Ok(())
+    }
 }
 
 /// Iterator on squirrel array
@@ -760,13 +772,19 @@ pub trait SqVmIterators<'vm>: SqVmApi {
 
 
 
+/// SQVM  local variable
 #[derive(Clone, PartialEq, PartialOrd, Eq, Debug, Hash)]
 pub struct SqLocalVar {
     pub name: String,
     pub val: DynSqVar,
 }
 
-
+/// SQVM local variable handle
+pub struct SqLocalVarHandle<'vm, VM>
+where VM: SqVmErrorHandling {
+    pub name: String,
+    pub handle: SqObjectRef<'vm, VM>,
+}
 
 /// Basic debug api methods
 pub trait SqVmDebugBasic: SqVmApi + SqGet<DynSqVar> + SqPush<Box<SqFnClosure>>
@@ -779,7 +797,7 @@ where Self: Sized
     /// Without line informations activated, only the 'call/return' callbacks will be invoked.
     fn set_debug_hook<F>(&mut self, mut hook: F)
     where
-        F: FnMut(DebugEventWithSrc, &mut FriendVm) + Send + 'static
+        F: FnMut(DebugEventWithSrc, &FriendVm) + Send + 'static
     {
         let debug_hook_glue = sq_closure!(
             #[(vm_var = "vm")]
@@ -858,13 +876,41 @@ where Self: Sized
     /// as they would be at the base of the stack, just before the real local variable
     /// 
     /// Returns `None` if local on specified `idx` and `level` doesn't exist 
-    fn get_local(&self, level: SqUnsignedInteger, idx: SqUnsignedInteger, max_depth: Option<u32>) -> Result<Option<SqLocalVar>> {
+    fn get_local(
+        &self,
+        level: SqUnsignedInteger,
+        idx: SqUnsignedInteger,
+        max_depth: Option<u32>,
+    ) -> Result<Option<SqLocalVar>> {
         let ptr = unsafe { sq_getlocal(self.handle(), level, idx) };
         if ptr != 0 as _ {
             let name = unsafe { cstr_to_string(ptr) };
             let val = self.get_constrain(-1, max_depth)?;
             self.pop(1);
             Ok(Some(SqLocalVar{ name, val }))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Returns the name and handle of a local variable given
+    /// stackframe and sequence in the stack.
+    ///
+    /// Free variables are treated as local variables, and will be returned
+    /// as they would be at the base of the stack, just before the real local variable
+    ///
+    /// Returns `None` if local on specified `idx` and `level` doesn't exist
+    fn get_local_handle(
+        &self,
+        level: SqUnsignedInteger,
+        idx: SqUnsignedInteger
+    ) -> Result<Option<SqLocalVarHandle<'_, Self>>> {
+        let ptr = unsafe { sq_getlocal(self.handle(), level, idx) };
+        if ptr != 0 as _ {
+            let name = unsafe { cstr_to_string(ptr) };
+            let val = SqObjectRef::get(self, -1)?;
+            self.pop(1);
+            Ok(Some(SqLocalVarHandle { name, handle: val }))
         } else {
             Ok(None)
         }
@@ -1049,11 +1095,13 @@ where Self: Sized
             let handler: SQCOMPILERERROR = handler.map(|h| h as _);
             sq_setcompilererrorhandler(self.handle(), handler);
         }
-
 }
 
 /// Advanced rust-wrapped operations
-pub trait SqVmAdvanced<'a>: SqVmApi + SQVm + SqPush<&'a str> + SqPush<SqFunction> + SqGet<SqUserData> {
+pub trait SqVmAdvanced<'a>:
+    SqVmApi + SQVm + SqPush<&'a str> + SqPush<SqFunction> + SqGet<SqUserData>
+    + SqGet<DynSqVar>
+{
     // TODO: Add typemask
     
     /// Bind rust native function to root table of SQVM
@@ -1074,8 +1122,8 @@ pub trait SqVmAdvanced<'a>: SqVmApi + SQVm + SqPush<&'a str> + SqPush<SqFunction
         self.pop(1);
     }
 
-    /// Compile and execute arbitrary squirrel script
-    fn execute_script(&self, script: String, src_file: String) -> Result<DynSqVar> {
+    /// Compile and arbitrary squirrel script
+    fn compile_closure(&self, script: String, src_file: String) -> Result<()> {
 
         /// This handler will push SqCompilerError ptr to stack as userdata
         extern "C" fn error_handler(
@@ -1119,14 +1167,18 @@ pub trait SqVmAdvanced<'a>: SqVmApi + SQVm + SqPush<&'a str> + SqPush<SqFunction
 
             bail!(err);
         };
+        Ok(())
+    }
 
-        self.push_root_table();
+    /// Call closure with specified argument count and return result.
+    ///
+    /// Returns [SqNull] if closure does not return anything.
+    fn closure_call(&self, argc: SqInteger) -> Result<DynSqVar> {
+        unsafe { self.call_closure(argc, true, false) }?;
+        let ret = self.get_constrain(-1, Some(16))?;
 
-        unsafe { self.call_closure(1, true, false) }?;
-
-        let ret = self.get_constrain(-1, Some(50))?;
-        // Pop closure and retval
-        self.pop(2);
+        // Pop retval
+        self.pop(1);
         Ok(ret)
     }
 }
@@ -1984,11 +2036,6 @@ where VM: SqVmObjectHandling {
         self.obj._type.into()
     }
 
-    /// Push referenced object back to vm
-    pub fn push(&self) {
-        self.vm.push_stack_obj(&self.obj);
-    }
-
     /// Get a reference to object on the stack
     pub fn get(vm: &'vm VM, idx: SqInteger) -> Result<Self> {
         let mut obj = vm.get_stack_obj(idx)?;
@@ -1997,5 +2044,13 @@ where VM: SqVmObjectHandling {
             obj,
             vm,
         })
+    }
+}
+
+impl<VM> SqPush<SqObjectRef<'_, VM>> for VM
+where VM: SqVmErrorHandling {
+    fn push(&self, val: SqObjectRef<'_, VM>) -> Result<()> {
+        self.push_stack_obj(&val.obj);
+        Ok(())
     }
 }

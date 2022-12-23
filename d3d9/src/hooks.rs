@@ -357,12 +357,10 @@ fn register_test_functions(vm: &mut SafeVm) {
 
     vm.register_function("TestObjRef", test_obj_ref);
     #[sqfn(vm_var = "vm")]
-    fn test_obj_ref() -> SqUnit {
+    fn test_obj_ref() -> SqObjectRef<'_, FriendVm> {
         let obj = SqObjectRef::get(vm, 2).unwrap();
-        obj.push();
 
-        // To show vm that this fn actually returns something
-        SqUnit
+        obj
     }
 
 }

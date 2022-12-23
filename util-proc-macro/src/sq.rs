@@ -223,7 +223,7 @@ pub fn sqfn_impl(
     let (vm_ident, vm_option) = match args.vm_var {
         Some(s) => {
             let ident = Ident::new(&s, Span::call_site());
-            let arg = quote!{ #ident: &mut #sq_wrapper_mod::FriendVm }.into();
+            let arg = quote!{ #ident: &#sq_wrapper_mod::FriendVm }.into();
             let arg = parse_macro_input!( arg as FnArg );
 
             match &mut item {
@@ -317,13 +317,13 @@ pub fn sqfn_impl(
             ) -> #sq_wrapper_mod::SqInteger {
                 #imports
 
-                let mut #vm_ident = unsafe { UnsafeVm::from_handle(hvm).into_friend() };
+                let #vm_ident = unsafe { UnsafeVm::from_handle(hvm).into_friend() };
 
                 #item
 
                 #sq_fn_body_start
     
-                let ret = rust_fn(#( #normal_arg_idents, )* #( #varargs,)* #(&mut #vm_option)* );
+                let ret = rust_fn(#( #normal_arg_idents, )* #( #varargs,)* #(&#vm_option)* );
     
                 #sq_fn_body_end
             }

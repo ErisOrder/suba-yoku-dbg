@@ -1,10 +1,10 @@
-use sq_common::{*, dbg::{SqLocalVarWithLvl}};
+use sq_common::{*, dbg::SqLocalVarWithLvl};
 use std::{
     sync::atomic,
     fs::File,
 };
 use clap::{Subcommand, Command, FromArgMatches};
-use anyhow::Result;
+use anyhow::{Result};
 use serde::{Serialize, Deserialize};
 use crate::hooks;
 
@@ -155,6 +155,14 @@ enum Commands {
     BreakpointList,
 
     /// Compile and run arbitrary squirrel code
+    ///
+    /// Local variables to be captured in compiled closure may be specified
+    /// in list on first script line like this:
+    ///
+    ///     |3.this, 1.capture_local1, 2.capture_local2, ...|
+    ///
+    /// where local variable name is prefixed with call stack level.
+    /// Note that `lvl.this` will be renamed to this_lvl, e.g. this_3
     #[clap(visible_alias = "eval")]
     Evaluate {
         /// If specified, enable debugging of compiled script
@@ -172,7 +180,8 @@ enum Commands {
 
     /// Continue execution, but print every debug event.
     ///
-    /// Warning: due to heavy use of stdout, it may be hard to send stop command to debugger, use breakpoints instead 
+    /// Warning: due to heavy use of stdout, it may be hard to send stop command to debugger,
+    /// use breakpoints instead
     #[clap(visible_alias = "t")]
     Trace,
 
@@ -446,6 +455,41 @@ impl DebuggerFrontend {
             },
         };
 
+        // Parse list of captured local vars
+        let (script, capture) = if let Some(mut line) = script.lines().next() { 'block: {
+            line = line.trim();
+            if !line.starts_with('|') || !line.ends_with('|') {
+                // Return cloned script and no captured locals
+                break 'block (script.clone(), vec![]);
+            }
+
+            let list = &line[1..line.len() - 1];
+            let mut out = vec![];
+
+            for spec in list.split(',') {
+                let parts: Vec<_> = spec.trim().split('.').collect();
+                match &parts[..] {
+                    [lvl, name] if name.starts_with(|c: char| c.is_alphabetic())
+                        => if let Ok(lvl) = lvl.parse() {
+                        out.push((name.to_string(), lvl));
+                    } else {
+                        println!("invalid level specification: {lvl} ({spec})");
+                        return;
+                    }
+                    _ => {
+                        println!("invalid local var specification: {spec}");
+                        return;
+                    }
+                }
+            }
+
+            // Return script without first line and vector with captured vars
+            (script.lines().skip(1).collect(), out)
+        }} else {
+            println!("buffer is empty");
+            return;
+        };
+
         self.during_eval = true;
 
         let eval_res = |res| match res {
@@ -453,10 +497,10 @@ impl DebuggerFrontend {
             Err(e) => println!("failed to evaluate: {e}"),  
         };
 
-        if !debug { 
-            eval_res(dbg.execute(script.clone())) 
-        } 
-        else { match dbg.execute_debug(script.clone()) {
+        if !debug {
+            eval_res(dbg.execute(script, capture))
+        }
+        else { match dbg.execute_debug(script, capture) {
             // Spawn thread that will wait for eval result
             Ok(fut) => { std::thread::spawn(move || eval_res(fut())); },
             Err(e) => println!("failed to evaluate: {e}"),

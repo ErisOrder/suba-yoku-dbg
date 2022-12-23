@@ -1,5 +1,5 @@
 use std::{time::Duration, sync::{Arc, Mutex, MutexGuard}};
-use anyhow::{Result, bail};
+use anyhow::{Result, bail, anyhow};
 use atomic::{Atomic, Ordering};
 use crossbeam::channel::{bounded, unbounded, Receiver, Sender};
 use serde::{Serialize, Deserialize};
@@ -17,13 +17,24 @@ pub enum ExecState {
     Halted
 }
 
+/// Specification of local to be captured (name, level)
+pub type SqCaptureLocal = (String, SqUnsignedInteger);
+
+/// Description of script
+pub struct SqScriptDesc {
+    /// Local variables to be captured
+    capture: Vec<SqCaptureLocal>,
+    script: String,
+    debug: bool,
+}
+
 pub enum DebugMsg {
     Step,
     Backtrace,
     Trace,
     /// Level, Depth
     Locals(Option<SqUnsignedInteger>, SqUnsignedInteger),
-    Eval(String, bool),
+    Eval(SqScriptDesc),
 }
 
 /// SqLocalVar annotated with level
@@ -347,7 +358,43 @@ impl SqDebugger
 
                         resp_tx.send(DebugResp::Locals(if v.is_empty() { None } else { Some(v) })).unwrap();
                     },
-                    DebugMsg::Eval(script, debug) => {
+                    DebugMsg::Eval(SqScriptDesc { capture, script, debug }) => 'eval: {
+
+                        println!("{capture:?}");
+
+                        let mut env = IndexMap::with_capacity(capture.len());
+
+                        // Gather capture variables
+                        for (l_name, lvl) in capture {
+                            let mut idx = 0;
+                            loop {
+                                match vm.get_local_handle(lvl, idx) {
+                                    Ok(Some(SqLocalVarHandle { name, handle })) => {
+                                        // Continue to search for local
+                                        if l_name != name { idx += 1; continue; }
+                                        else {
+                                            // Special case
+                                            if name == "this" {
+                                                env.insert(format!("this_{lvl}"), handle);
+                                            } else {
+                                                env.insert(name, handle);
+                                            }
+                                            break;
+                                        }
+                                    },
+                                    Ok(None) => {
+                                        resp_tx.send(DebugResp::EvalResult(
+                                            Err(anyhow!("local {l_name} not found at level {lvl}"))
+                                        )).unwrap();
+                                        break 'eval;
+                                    }
+                                    Err(e) => {
+                                        resp_tx.send(DebugResp::EvalResult(Err(e))).unwrap();
+                                        break 'eval;
+                                    },
+                                }
+                            }
+                        }
 
                         // it`s a bit of black magic, so compiler can`t infer that...
                         // hook will be called again during compiled closure call,
@@ -356,8 +403,24 @@ impl SqDebugger
                             debugging = debug;
                         }
 
-                        let res = vm.execute_script(script, "eval.nut".into());
-                        
+                        let res: Result<DynSqVar> = try {
+                            vm.compile_closure(script, "eval.nut".into())?;
+
+                            vm.push(env)?;
+
+                            // Currently I don't know what's going here.
+                            // But seems like `env` becomes implicitly extended with root table.
+                            // And if these lines uncommented, root table overrrides `env`
+                            // vm.bind_env(-2)?;
+                            // vm.push_root_table();
+
+                            let ret = vm.closure_call(1)?;
+
+                            // Pop closures
+                            vm.pop(2);
+                            ret
+                        };
+
                         resp_tx.send(DebugResp::EvalResult(res)).unwrap();
 
                         debugging = true;
@@ -439,8 +502,13 @@ impl SqDebugger
     }
     
     /// Compile and execute arbitrary squirrel script.
-    pub fn execute(&self, script: String) -> Result<DynSqVar> {
-        self.sender.send(DebugMsg::Eval(script, false))?;
+    ///
+    /// `capture_locals` is list of locals variables names and levels that will
+    ///  be passed to compiled closure
+    pub fn execute(&self, script: String, capture_locals: Vec<SqCaptureLocal>) -> Result<DynSqVar> {
+        self.sender.send(DebugMsg::Eval(SqScriptDesc {
+            capture: capture_locals, script, debug: false
+        }))?;
 
         match self.receiver.recv_timeout(RECV_TIMEOUT) {
             Ok(DebugResp::EvalResult(res)) => res,
@@ -450,10 +518,20 @@ impl SqDebugger
     }
 
     /// Compile and execute arbitrary squirrel script, with debugging enabled.
-    /// 
+    ///
+    /// `capture_locals` is list of locals variables names and levels that will
+    /// be passed to compiled closure
+    ///
     /// Returns closure that will block until debugging is ended and eval result sent
-    pub fn execute_debug(&self, script: String) -> Result<impl Fn() -> Result<DynSqVar>> {
-        self.sender.send(DebugMsg::Eval(script, true))?;
+    pub fn execute_debug(
+        &self,
+        script: String,
+        capture_locals: Vec<SqCaptureLocal>
+    ) -> Result<impl Fn() -> Result<DynSqVar>> {
+        self.sender.send(DebugMsg::Eval(SqScriptDesc {
+            capture: capture_locals, script, debug: true
+        }))?;
+
         let receiver = self.receiver.clone();
 
         Ok(move || match receiver.recv() {
