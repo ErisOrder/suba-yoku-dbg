@@ -1,10 +1,11 @@
 use sq_common::{*, dbg::SqLocalVarWithLvl};
 use std::{
     sync::atomic,
-    fs::File,
+    fs::{File, read_dir}, cell::RefCell, rc::Rc,
+    io::Read, path::Path, ops::Range,
 };
 use clap::{Subcommand, Command, FromArgMatches};
-use anyhow::{Result};
+use anyhow::{Result, anyhow};
 use serde::{Serialize, Deserialize};
 use crate::hooks;
 
@@ -33,6 +34,33 @@ enum SetCommands {
         #[arg(value_enum)]
         active: BoolVal,
     }
+}
+
+#[derive(Subcommand, Debug, Clone)]
+enum SrcCommands {
+    /// Add directory with source files.
+    Add {
+        /// Path to source root directory
+        path: String,
+
+        /// Prefix that will be used for each file.
+        prefix: Option<String>,
+    },
+
+    /// Display source file
+    #[clap(visible_alias = "p")]
+    Print {
+        /// File name with prefix
+        file: String,
+    },
+
+    /// List all sources directories
+    #[clap(visible_alias = "ls")]
+    List {
+        #[clap(short, long)]
+        /// List all files instead of directories
+        files: bool
+    },
 }
 
 #[derive(Subcommand, Debug, Clone, Copy)]
@@ -190,6 +218,10 @@ enum Commands {
     #[clap(visible_alias = "t")]
     Trace,
 
+    /// Add, remove, or display code source files
+    #[command(subcommand)]
+    Src(SrcCommands),
+
     /// Set values of different debugging variables
     #[command(subcommand)]
     Set(SetCommands),
@@ -227,6 +259,7 @@ pub struct DebuggerFrontend {
     last_cmd: Commands,
     buffers: ScriptBuffers,
     during_eval: bool,
+    srcs: SourceDB,
 }
 
 /// Private methods
@@ -551,6 +584,38 @@ impl DebuggerFrontend {
         }
     }
 
+    fn manipulate_sources(&mut self, cmd: SrcCommands) {
+        match cmd {
+            SrcCommands::Add { path, prefix } => {
+                if let Err(e) = self.srcs.add_dir(path, prefix) {
+                    println!("Error adding sources: {e}");
+                }
+            }
+
+            SrcCommands::Print { file } => {
+                if let Some((_, f)) = self.srcs.iter_files().find(
+                    |(pref, f)| match pref {
+                        Some(pref) => {
+                            // Chain prefix with name and compare to string
+                            pref.chars().chain(f.name.chars()).eq(file.chars())
+                        },
+                        None => f.name == file
+                    }
+                ) {
+                    println!("{}", f.text);
+                }
+            }
+
+            SrcCommands::List { files } => {
+                if files {
+                    self.srcs.list_files()
+                } else {
+                    self.srcs.list_dirs()
+                }
+            }
+        }
+    }
+
     /// Save state to file
     fn save(state: SavedState, path: &str) -> Result<()> {
         let f = File::create(path)?;
@@ -572,7 +637,8 @@ impl DebuggerFrontend {
         Self { 
             last_cmd: Commands::default(),
             buffers: ScriptBuffers::new(),
-            during_eval: false
+            during_eval: false,
+            srcs: SourceDB::new(),
         }
     }
 
@@ -613,6 +679,8 @@ impl DebuggerFrontend {
             Commands::Trace => if let Err(e) = dbg.start_tracing() {
                 println!("trace failed: {e}")
             }
+
+            Commands::Src(cmd) => self.manipulate_sources(cmd.clone()),
 
             Commands::Load { file } => 
             match Self::load(file.as_deref().unwrap_or(DEFAULT_STATE_FILENAME)) {
@@ -691,6 +759,7 @@ impl ScriptBuffers {
     }
 }
 
+// TODO: Refactor display function
 impl std::fmt::Display for ScriptBuffers {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         const NUM_FIELD: usize = 8;
@@ -707,5 +776,124 @@ impl std::fmt::Display for ScriptBuffers {
             write!(f, "{n:<NUM_FIELD$}{} ...", if let Some(l) = line{ l } else { "" })?;
         }
         Ok(())
+    }
+}
+
+/// Information about class in src file
+struct SqClass {
+    name: String,
+    base: Option<String>
+}
+
+/// Information about function in src file
+struct SqFunc {
+    name: String,
+    class: Rc<RefCell<SqClass>>
+}
+
+/// Class or function
+enum SqItem {
+    Func(SqFunc),
+    Class(SqClass),
+}
+
+/// Source file item with span
+struct SqSrcItem {
+    item: SqItem,
+    line: Range<SqInteger>
+}
+
+/// Source file with name, text and parsed items
+struct SqSrcFile {
+    name: String,
+    text: String,
+    items: Vec<SqItem>
+}
+
+impl SqSrcFile {
+    pub fn parse<P: AsRef<Path>>(path: P, name: String) -> Result<Self> {
+        let mut f = File::open(path)?;
+
+        let mut file = Self {
+            name,
+            text: String::new(),
+            items: vec![],
+        };
+
+        f.read_to_string(&mut file.text)?;
+
+        Ok(file)
+    }
+}
+
+/// Directory with source files
+struct SqSrcDir {
+    path: String,
+    prefix: Option<String>,
+    files: Vec<SqSrcFile>,
+}
+
+/// Structure for managing source files directories
+struct SourceDB(Vec<SqSrcDir>);
+
+const PREFIX_FIELD: usize = 32;
+
+impl SourceDB {
+    pub fn new() -> Self {
+        Self(vec![])
+    }
+
+    /// Try to add new directory
+    pub fn add_dir(&mut self, path: String, prefix: Option<String>) -> Result<()> {
+        let mut dir = SqSrcDir { path, prefix, files: vec![] };
+
+        read_dir(dir.path.clone())?.into_iter().try_for_each(
+        |e| -> Result<()> {
+            let entry = e?;
+            let name = entry.file_name().to_string_lossy().to_string();
+
+            let file = SqSrcFile::parse(entry.path(), name)?;
+            dir.files.push(file);
+
+            Ok(())
+        })?;
+
+        self.0.push(dir);
+        Ok(())
+    }
+
+    /// Get directories
+    pub fn dirs(&self) -> &Vec<SqSrcDir> {
+        &self.0
+    }
+
+    /// Get all files' with their prefixes iterator
+    pub fn iter_files(&self) -> impl Iterator<Item = (&Option<String>, &SqSrcFile)> {
+        self.0.iter().map(
+            |d| [&d.prefix].into_iter().cycle().zip(d.files.iter())
+        ).flatten()
+    }
+
+    /// Print formatted list of directories
+    pub fn list_dirs(&self) {
+        const PATH_FIELD: usize = 40;
+
+        println!("{:<PREFIX_FIELD$}{:<PATH_FIELD$}files", "prefix", "path");
+        for SqSrcDir { path, prefix, files } in self.dirs() {
+            println!("{:<PREFIX_FIELD$}{path:<PATH_FIELD$}{}",
+                prefix.as_deref().unwrap_or_default(), files.len(),
+            )
+        }
+    }
+
+    /// Print formatted list of files
+    pub fn list_files(&self) {
+        const NAME_FIELD: usize = 24;
+        println!("{:<PREFIX_FIELD$}{:<NAME_FIELD$}lines", "prefix", "name");
+        for (pref, SqSrcFile { name, text, .. }) in self.iter_files() {
+            println!("{:<PREFIX_FIELD$}{name:<NAME_FIELD$}{}",
+                pref.as_deref().unwrap_or_default(), text.lines().count()
+            )
+        }
     }
 }
