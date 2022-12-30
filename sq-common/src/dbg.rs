@@ -8,8 +8,6 @@ use crate::sq::*;
 
 const RECV_TIMEOUT: Duration = Duration::from_secs(10);
 
-const BP_NUMBER_FIELD: usize = 8;
-const BP_ENABLED_FIELD: usize = 10;
 
 #[derive(Copy, Clone, PartialEq, PartialOrd, Eq, Ord, Debug, Hash)]
 pub enum ExecState {
@@ -156,26 +154,6 @@ impl SqBreakpoint {
     }
 }
 
-impl std::fmt::Display for SqBreakpoint {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let SqBreakpoint { line, fn_name, src_file, enabled, number } = self;
-        write!(f, "{number:<BP_NUMBER_FIELD$}{enabled:<BP_ENABLED_FIELD$}")?;
-
-        if src_file.is_some() {
-            write!(f, "file:")?;
-        }
-
-        // TODO: Replace with some of itertools crate method
-        let line = line.as_ref().map(|line| line.to_string());
-        let strvec: Vec<_> = [src_file, fn_name, &line].into_iter().flatten().cloned().collect();
-        let joined = strvec.join(":");
-
-        f.write_str(&joined)?;
-         
-        Ok(())
-    }
-}
-
 #[derive(Clone, PartialEq, PartialOrd, Eq, Ord, Debug, Hash, Serialize, Deserialize)]
 pub struct BreakpointStore { 
     store: Vec<SqBreakpoint>,
@@ -213,18 +191,10 @@ impl BreakpointStore {
             |bp| !matches!(num, Some(num) if bp.number != num)
         ).for_each(|bp| bp.enable(en));
     }
-}
 
-impl std::fmt::Display for BreakpointStore {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if self.store.is_empty() {
-            return write!(f, "no breakpoints registered")
-        }
-        writeln!(f, "{:<BP_NUMBER_FIELD$}{:<BP_ENABLED_FIELD$}location", "number", "enabled")?;   
-        for bp in &self.store {
-            writeln!(f, "{bp}")?;
-        }
-        Ok(())
+    /// Get breakpoints store
+    pub fn breakpoints(&self) -> &Vec<SqBreakpoint> {
+        &self.store
     }
 }
 

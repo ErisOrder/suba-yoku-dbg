@@ -1,11 +1,11 @@
-use sq_common::{*, dbg::SqLocalVarWithLvl};
+use sq_common::{*, dbg::{SqLocalVarWithLvl, SqBreakpoint}};
 use std::{
     sync::atomic,
     fs::{File, read_dir}, cell::RefCell, rc::Rc,
     io::Read, path::Path, ops::Range,
 };
 use clap::{Subcommand, Command, FromArgMatches};
-use anyhow::{Result, anyhow};
+use anyhow::{Result};
 use serde::{Serialize, Deserialize};
 use crate::hooks;
 
@@ -268,34 +268,6 @@ impl DebuggerFrontend {
         println!("Backtrace:");
         for (lvl, info) in bt.into_iter().enumerate() {
             println!("{:03}: {info}", lvl + 1);
-        }
-    }
-
-    /// Print locals in form
-    /// ```rs
-    /// Level X locals:
-    /// loc: type [= val]
-    /// 
-    /// Level Y locals:
-    /// ...
-    /// ```
-    fn print_locals(locals: Vec<SqLocalVarWithLvl>) {
-        let mut curr_lvl = 0; // Non-existent
-        for SqLocalVarWithLvl { var: SqLocalVar { name, val }, lvl } in locals {
-            if lvl != curr_lvl {
-                println!("\nLevel {lvl} locals:");
-                curr_lvl = lvl;
-            }
-
-            print!("{name}: {:?}", val.get_type());
-
-            match val {
-                DynSqVar::Integer(i) => println!(" = {i}"),
-                DynSqVar::Float(f) => println!(" = {f}"),
-                DynSqVar::Bool(b) => println!(" = {b}"),
-                DynSqVar::String(s) => println!(" = \"{s}\""),
-                _ => println!(),
-            }
         }
     }
 
@@ -580,7 +552,7 @@ impl DebuggerFrontend {
                 println!("no such buffer")
             }
             
-            BufferCommands::List => println!("{}", self.buffers),
+            BufferCommands::List => self.buffers.list_items(),
         }
     }
 
@@ -608,9 +580,9 @@ impl DebuggerFrontend {
 
             SrcCommands::List { files } => {
                 if files {
-                    self.srcs.list_files()
+                    self.srcs.iter_files().list_items()
                 } else {
-                    self.srcs.list_dirs()
+                    self.srcs.dirs().list_items()
                 }
             }
         }
@@ -658,7 +630,7 @@ impl DebuggerFrontend {
 
             Commands::Locals { level } =>
             match dbg.get_locals(*level, 0) {
-                Ok(locals) => Self::print_locals(locals),
+                Ok(locals) => locals.list_items(),
                 Err(e) => println!("failed to get locals: {e}"),
             }
 
@@ -669,7 +641,7 @@ impl DebuggerFrontend {
             Commands::BreakpointEnable { num } => dbg.breakpoints().enable(*num, true),
             Commands::BreakpointDisable { num } => dbg.breakpoints().enable(*num, false),
             Commands::BreakpointClear { num } => dbg.breakpoints().remove(*num),
-            Commands::BreakpointList => println!("Breakpoints:\n{}", dbg.breakpoints()),
+            Commands::BreakpointList => dbg.breakpoints().list_items(),
 
             Commands::Evaluate { debug , buffer, depth }
                 => self.eval_script(dbg, *debug, *buffer, *depth),
@@ -721,6 +693,77 @@ impl DebuggerFrontend {
     }
 }
 
+/// Listing container contents
+trait ListItems {
+    /// Print list of contained items
+    fn list_items(&self);
+}
+
+/// Listing iterator elements
+trait IntoListItems {
+    /// Print list of iterated elements
+    fn list_items(self);
+}
+
+impl ListItems for dbg::BreakpointStore {
+    fn list_items(&self) {
+        const BP_NUMBER_FIELD: usize = 8;
+        const BP_ENABLED_FIELD: usize = 10;
+
+        if self.breakpoints().is_empty() {
+            return println!("no breakpoints registered")
+        }
+
+        println!("{:<BP_NUMBER_FIELD$}{:<BP_ENABLED_FIELD$}location", "number", "enabled");   
+        for SqBreakpoint { line, fn_name, src_file, enabled, number } in self.breakpoints() {
+            print!("{number:<BP_NUMBER_FIELD$}{enabled:<BP_ENABLED_FIELD$}");
+    
+            if src_file.is_some() {
+                print!("file:");
+            }
+    
+            let line = line.as_ref().map(|line| line.to_string());
+            let parts = [src_file, fn_name, &line];
+            for (idx, part) in parts.into_iter().flatten().enumerate() {
+                if idx > 0 { print!(":"); }
+                print!("{part}");
+            }
+
+            println!();
+        }
+    }
+}
+
+impl ListItems for Vec<SqLocalVarWithLvl> {
+    /// Print locals in form
+    /// ```rs
+    /// Level X locals:
+    /// loc: type [= val]
+    /// 
+    /// Level Y locals:
+    /// ...
+    /// ```
+    fn list_items(&self) {
+        let mut curr_lvl = 0; // Non-existent
+        for SqLocalVarWithLvl { var: SqLocalVar { name, val }, lvl } in self {
+            if *lvl != curr_lvl {
+                println!("Level {lvl} locals:");
+                curr_lvl = *lvl;
+            }
+
+            print!("    {name}: {:?}", val.get_type());
+
+            match val {
+                DynSqVar::Integer(i) => println!(" = {i}"),
+                DynSqVar::Float(f) => println!(" = {f}"),
+                DynSqVar::Bool(b) => println!(" = {b}"),
+                DynSqVar::String(s) => println!(" = \"{s}\""),
+                _ => println!(),
+            }
+        }
+    }
+}
+
 /// Struct that holds multiple string with script
 #[derive(Clone, Serialize, Deserialize)]
 struct ScriptBuffers {
@@ -759,23 +802,22 @@ impl ScriptBuffers {
     }
 }
 
-// TODO: Refactor display function
-impl std::fmt::Display for ScriptBuffers {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl ListItems for ScriptBuffers {
+    fn list_items(&self) {
         const NUM_FIELD: usize = 8;
 
         if self.store.is_empty() {
-            return write!(f, "no buffers available");
+            print!("no buffers available");
+            return;
         }
 
-        write!(f, "{:<NUM_FIELD$}content", "number")?;
+        print!("{:<NUM_FIELD$}content", "number");
         for (n, buf) in &self.store {
             // print separating newline
-            writeln!(f)?;
+            println!();
             let line = buf.lines().next();
-            write!(f, "{n:<NUM_FIELD$}{} ...", if let Some(l) = line{ l } else { "" })?;
+            print!("{n:<NUM_FIELD$}{} ...", if let Some(l) = line{ l } else { "" });
         }
-        Ok(())
     }
 }
 
@@ -800,7 +842,7 @@ enum SqItem {
 /// Source file item with span
 struct SqSrcItem {
     item: SqItem,
-    line: Range<SqInteger>
+    lines: Range<SqInteger>
 }
 
 /// Source file with name, text and parsed items
@@ -868,29 +910,46 @@ impl SourceDB {
     }
 
     /// Get all files' with their prefixes iterator
-    pub fn iter_files(&self) -> impl Iterator<Item = (&Option<String>, &SqSrcFile)> {
-        self.0.iter().map(
+    pub fn iter_files(&self) -> FileIter<impl Iterator<Item = FileWithPrefixRef<'_>>> {
+        FileIter(self.0.iter().map(
             |d| [&d.prefix].into_iter().cycle().zip(d.files.iter())
-        ).flatten()
+        ).flatten())
     }
+}
 
-    /// Print formatted list of directories
-    pub fn list_dirs(&self) {
+type FileWithPrefixRef<'a> = (&'a Option<String>, &'a SqSrcFile);
+
+struct FileIter<I>(I);
+
+impl<T, I> Iterator for FileIter<I>
+where I: Iterator<Item = T> {
+    type Item = T;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.0.next()
+    }
+}
+
+impl ListItems for Vec<SqSrcDir> {
+    fn list_items(&self) {
         const PATH_FIELD: usize = 40;
 
         println!("{:<PREFIX_FIELD$}{:<PATH_FIELD$}files", "prefix", "path");
-        for SqSrcDir { path, prefix, files } in self.dirs() {
+        for SqSrcDir { path, prefix, files } in self {
             println!("{:<PREFIX_FIELD$}{path:<PATH_FIELD$}{}",
                 prefix.as_deref().unwrap_or_default(), files.len(),
             )
         }
     }
+}
 
-    /// Print formatted list of files
-    pub fn list_files(&self) {
+
+impl<'a, I> IntoListItems for FileIter<I>
+where I: Iterator<Item = FileWithPrefixRef<'a>>  {
+    fn list_items(self) {
         const NAME_FIELD: usize = 24;
         println!("{:<PREFIX_FIELD$}{:<NAME_FIELD$}lines", "prefix", "name");
-        for (pref, SqSrcFile { name, text, .. }) in self.iter_files() {
+        for (pref, SqSrcFile { name, text, .. }) in self {
             println!("{:<PREFIX_FIELD$}{name:<NAME_FIELD$}{}",
                 pref.as_deref().unwrap_or_default(), text.lines().count()
             )
