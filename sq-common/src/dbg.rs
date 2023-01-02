@@ -3,8 +3,8 @@ use anyhow::{Result, bail, anyhow};
 use atomic::{Atomic, Ordering};
 use crossbeam::channel::{bounded, unbounded, Receiver, Sender};
 use serde::{Serialize, Deserialize};
-use crate::sq::*;
-
+use crate::rust_wrap::*;
+use crate::raw_api::VmRawApi;
 
 const RECV_TIMEOUT: Duration = Duration::from_secs(10);
 

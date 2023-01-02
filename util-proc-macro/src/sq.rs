@@ -245,10 +245,11 @@ pub fn sqfn_impl(
     let imports = quote! {
         use log::debug;
         use #sq_wrapper_mod::*;
+        use #sq_wrapper_mod::raw_api::*;
     };
 
     let sq_fn_body_start = quote! {
-        let top = #vm_ident.stack_len();
+        let top = #vm_ident.stack_top();
         let norm_argc = #norm_argc as i32;
 
         // Stack layout (function with 2 args):
