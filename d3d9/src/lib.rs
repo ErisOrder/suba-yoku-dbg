@@ -1,12 +1,11 @@
 #![cfg(windows)]
+#![feature(asm_const)]
 
 use std::time::Duration;
 
 use sq_common::dbg;
 use log::debug;
-use winapi::shared::minwindef::{BOOL, DWORD, HINSTANCE, LPVOID, UINT, TRUE};
-use winapi::shared::d3d9::IDirect3D9;
-use lazy_static::lazy_static;
+use winapi::shared::minwindef::{BOOL, DWORD, HINSTANCE, LPVOID, TRUE};
 
 mod wrappers;
 mod util;
@@ -14,29 +13,7 @@ mod hooks;
 
 util_proc_macro::set_sqfn_paths!(sq_wrap_path = "sq_common");
 
-type D3D9CreateFn = unsafe extern "stdcall" fn(UINT) -> *mut IDirect3D9;
-
-lazy_static! {
-    static ref D3D9_LIB: libloading::Library = {
-        debug!("Loading D3D9 lib");
-        let mut sys_dir = wrappers::get_system_directory();
-        sys_dir.push_str("\\d3d9.dll");
-        unsafe { libloading::Library::new(sys_dir).expect("failed to load d3d9 library") }
-    };
-
-    static ref D3D9_CREATE: libloading::Symbol<'static, D3D9CreateFn> = unsafe {
-        D3D9_LIB.get(b"Direct3DCreate9").expect("failed to get Direct3DCreate9 address")
-    };
-
-
-}
-
-/// Proxy function for passing call to real d3d9 lib
-#[no_mangle]
-#[allow(non_snake_case)]
-extern "stdcall" fn Direct3DCreate9(sdk_version: UINT) -> *mut IDirect3D9 {
-    unsafe { D3D9_CREATE(sdk_version) }
-}
+dylib_mitm::dylib_mitm!("C:\\Windows\\SysWOW64\\d3d9.dll");
 
 /// Based on https://github.com/rkarp/rust-dll-demo
 /// 
@@ -69,6 +46,8 @@ extern "system" fn DllMain(
 }
 
 fn dll_init() {
+    unsafe { d3d9::init(); }
+
     std::panic::set_hook(Box::new(|info| {
         let msg = format!("{}\n{}",
         &info.to_string(), std::backtrace::Backtrace::capture());

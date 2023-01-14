@@ -12,11 +12,11 @@ crate-type = ["cdylib"]
 
 [dependencies]
 scrawl = { git = "https://github.com/nikvoid/scrawl" }
+dylib-mitm = { git = "https://github.com/nikvoid/dylib-mitm" }
 winapi = { version = "0.3.9", features = ["consoleapi", "minwindef", "d3d9", "sysinfoapi", "winbase", "psapi"] }
 ctrlc = "3.2.3"
 user32-sys = "0.2.0"
 lazy_static = "1.4.0"
-libloading = "0.7"
 dynasmrt = "1.2.3"
 region = "3.0.0"
 clap = { version = "4", features = ["derive"] }
