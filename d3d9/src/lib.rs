@@ -1,5 +1,4 @@
 #![cfg(windows)]
-#![feature(asm_const)]
 
 use std::time::Duration;
 
@@ -13,7 +12,22 @@ mod hooks;
 
 util_proc_macro::set_sqfn_paths!(sq_wrap_path = "sq_common");
 
-dylib_mitm::dylib_mitm!("C:\\Windows\\SysWOW64\\d3d9.dll");
+dylib_mitm::dylib_mitm!(
+    proto_path = r"C:\Windows\SysWOW64\d3d9.dll",
+    load_lib = r#" &{
+        let mut sys_dir = wrappers::get_system_directory();
+        sys_dir.push_str(r"\d3d9.dll");
+        sys_dir     
+    }"#,
+    manual_impls = "Direct3DCreate9",
+);
+
+#[allow(non_snake_case)]
+#[dylib_mitm::manual_impl]
+pub extern "C" fn Direct3DCreate9(version: u32) -> *mut u8 {
+    debug!("Called Direct3DCreate9");
+    unsafe { __Direct3DCreate9(version) }
+}
 
 /// Based on https://github.com/rkarp/rust-dll-demo
 /// 
@@ -89,11 +103,11 @@ fn dll_init() {
         let recv = loop {
             if let Some(ref mut dbg) = *hooks::SQ_DEBUGGER.lock().unwrap() {
                 break dbg.event_rx().clone();
-            } else {
-                std::thread::sleep(Duration::from_millis(50));
             }
+            std::thread::sleep(Duration::from_millis(50));
         };
 
+        
         // Debugger frontend thread
         // It`s spawned here, because event listener needs to be acquired first
         // due to frontend thread locking debugger mutex 
