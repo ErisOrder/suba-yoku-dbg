@@ -16,6 +16,7 @@ atomic = "0.5"
 crossbeam = "0.8.2"
 serde_json = "1.0.89"
 serde = { version = "1.0.151", features = ["derive"] }
+thiserror = "1.0.38"
 
 [profile.release]
 panic = "abort"
