@@ -4,7 +4,7 @@ use util_proc_macro::{set_sqfn_paths, sq_closure};
 use std::{ptr::{addr_of_mut, addr_of}, cmp::Ordering, hash::Hash, fmt::Write, marker::PhantomData};
 use bitflags::bitflags;
 
-use crate::raw_api::*;
+use crate::{raw_api::*, sq_expect};
 
 use anyhow::Result;
 
@@ -330,18 +330,11 @@ macro_rules! sq_try {
         {
             let out = $e;
             if out == SQ_ERROR {
-                Err(match unsafe { $vm.last_error_cstr().to_str() } {
-                    Ok(err) => SqVmError::parse(err),
-                    Err(e) => SqVmError::other(e.to_string())
+                Err(match unsafe { $vm.last_error_cstr().map(|c| c.to_str()) } {
+                    Some(Ok(err)) => SqVmError::parse(err),
+                    Some(Err(e)) => SqVmError::other(e.to_string()),
+                    None => SqVmError::Other(None),
                 })
-            } else { Ok(out) }
-        }
-    };
-    ($vm:expr, nothrow $e:expr) => {
-        {
-            let out = $e;
-            if out == SQ_ERROR {
-                Err(SqVmError::Other(None))
             } else { Ok(out) }
         }
     };
@@ -349,18 +342,15 @@ macro_rules! sq_try {
 
 /// Main vm trait
 pub trait SqVm: VmRawApi {
-    /// Get last VM error
+    /// Get last VM error.
+    /// Return `None` if failed to decode string into utf-8. 
     /// # Panics
-    /// Panics if failed to get error string
+    /// Panics if failed to get error string.
     #[inline]
-    fn last_error(&self) -> String {
-        unsafe {
-            self.getlasterror();
-            let mut ptr = std::ptr::null();
-            if self.getstring(-1, addr_of_mut!(ptr)) == SQ_ERROR {
-                panic!("Failed to get last error")
-            }
-            cstr_to_string(ptr)
+    fn last_error(&self) -> Option<String> {
+        unsafe { 
+            self.last_error_cstr()
+                .and_then(|cstr| cstr.to_str().ok().map(|c| c.into())) 
         }
     }
 
@@ -371,13 +361,20 @@ pub trait SqVm: VmRawApi {
     /// # Panics
     /// Panics if failed to get error string
     #[inline]
-    unsafe fn last_error_cstr(&self) -> &std::ffi::CStr {
+    unsafe fn last_error_cstr(&self) -> Option<&std::ffi::CStr> {
         self.getlasterror();
-        let mut ptr = std::ptr::null();
-        if self.getstring(-1, addr_of_mut!(ptr)) == SQ_ERROR {
-            panic!("Failed to get last error")
+
+        match self.get_type(-1) {
+            SqType::Null => None,
+            SqType::String => {
+                let mut ptr = std::ptr::null();
+                if self.getstring(-1, addr_of_mut!(ptr)) == SQ_ERROR {
+                    panic!("Failed to get last error")
+                }
+                Some(std::ffi::CStr::from_ptr(ptr))        
+            }
+            other => panic!("Unknown error type {other:?}"),
         }
-        std::ffi::CStr::from_ptr(ptr)
     }
 
     /// Throw error string as an exception to the vm
@@ -430,9 +427,8 @@ pub trait SqVm: VmRawApi {
     /// Pops a value from the stack and pushes it in the back
     /// of the array at the position `idx` in the stack.
     #[inline]
-    fn array_append(&self, idx: SqInteger) -> Result<()> {
-        sq_try! { self, unsafe { self.arrayappend(idx) } }
-        .context(format!("Failed to insert value to array at index {idx}"))?;
+    fn array_append(&self, idx: SqInteger) -> SqVmResult<()> {
+        sq_try! { self, unsafe { self.arrayappend(idx) } }?;
         Ok(())
     }
     
@@ -443,9 +439,8 @@ pub trait SqVm: VmRawApi {
     /// if `is_static = true` creates a static member.
     /// This parameter is only used if the target object is a class
     #[inline]
-    fn new_slot(&self, idx: SqInteger, is_static: bool) -> Result<()> {
-        sq_try! { self, unsafe { self.newslot(idx, is_static as _) } }
-        .context(format!("Failed to create slot for table at idx {idx}"))?;
+    fn new_slot(&self, idx: SqInteger, is_static: bool) -> SqVmResult<()> {
+        sq_try! { self, unsafe { self.newslot(idx, is_static as _) } }?;
         Ok(())
     }
 
@@ -455,9 +450,8 @@ pub trait SqVm: VmRawApi {
     /// this call will invoke the delegation system like a normal assignment,
     /// it only works on tables, arrays and userdata.
     #[inline]
-    fn slot_set(&self, idx: SqInteger) -> Result<()> {
-        sq_try! { self, self.set_to_slot(idx) }
-        .context(format!("Failed to set slot value for table at idx {idx}"))?;
+    fn slot_set(&self, idx: SqInteger) -> SqVmResult<()> {
+        sq_try! { self, self.set_to_slot(idx) }?;
         Ok(())
     }
 
@@ -468,7 +462,7 @@ pub trait SqVm: VmRawApi {
     /// It only works on tables, instances, arrays and classes.
     /// If the function fails nothing will be pushed in the stack.
     #[inline]
-    fn slot_get(&self, idx: SqInteger) -> Result<()> {
+    fn slot_get(&self, idx: SqInteger) -> SqVmResult<()> {
         sq_try!{ self, self.get_from_slot(idx) }?;
         Ok(())
     }
@@ -480,7 +474,7 @@ pub trait SqVm: VmRawApi {
     /// It only works on tables, instances, arrays and classes.
     /// If the function fails nothing will be pushed in the stack.
     #[inline]
-    fn slot_get_raw(&self, idx: SqInteger) -> Result<()> {
+    fn slot_get_raw(&self, idx: SqInteger) -> SqVmResult<()> {
         sq_try!{ self, unsafe { self.rawget(idx) } }?;
         Ok(())
     }
@@ -516,7 +510,7 @@ pub trait SqVm: VmRawApi {
     fn compile_string(&self, script: String, mut src_name: String, raise_err: bool) -> Result<()> {
         src_name.push('\0');
 
-        sq_try! { self, nothrow unsafe { 
+        sq_try! { self, unsafe { 
             self.compilebuffer(
                 script.as_ptr() as _,
                 script.len() as _,
@@ -529,18 +523,14 @@ pub trait SqVm: VmRawApi {
 
     /// Pushes class of a class instance at position `idx`
     #[inline]
-    fn get_instance_class(&self, idx: SqInteger) -> Result<()> {
-        sq_try! { self,
-            unsafe { self.getclass(idx) }
-        }?;
+    fn get_instance_class(&self, idx: SqInteger) -> SqVmResult<()> {
+        sq_try! { self, unsafe { self.getclass(idx) } }?;
         Ok(())
     }
 
     /// Push info table of closure on stack index `idx` 
-    fn get_closure_info(&self, idx: SqInteger) -> Result<()> {
-        sq_try! { self,
-            unsafe { self.closure_getinfos(idx) }
-        }?;
+    fn get_closure_info(&self, idx: SqInteger) -> SqVmResult<()> {
+        sq_try! { self, unsafe { self.closure_getinfos(idx) } }?;
         Ok(())
     }
 
@@ -551,20 +541,18 @@ pub trait SqVm: VmRawApi {
     /// Then pushes the new cloned closure on top of the stack
     ///
     /// The cloned closure holds the environment object as weak reference.
-    fn bind_env(&self, idx: SqInteger) -> Result<()> {
-        sq_try!{ self,
-            unsafe { self.bindenv(idx) }
-        }?;
+    fn bind_env(&self, idx: SqInteger) -> SqVmResult<()> {
+        sq_try!{ self, unsafe { self.bindenv(idx) } }?;
         Ok(())
     }
 
     /// Get a pointer to the string at the `idx` position in the stack.
     #[inline]
-    fn get_string(&self, idx: SqInteger) -> Result<*const u8> {
+    fn get_string(&self, idx: SqInteger) -> SqVmResult<*const u8> {
         let mut ptr = std::ptr::null_mut();
         sq_try! { self,
-                unsafe { self.getstring(idx, addr_of_mut!(ptr) as _) }
-        }.context(format!("Failed to get string at idx {idx}"))?;
+            unsafe { self.getstring(idx, addr_of_mut!(ptr) as _) }
+        }?;
         Ok(ptr)
     }
 
@@ -577,31 +565,25 @@ pub trait SqVm: VmRawApi {
 
     /// Get the value of the integer at the `idx` position in the stack.
     #[inline]
-    fn get_integer(&self, idx: SqInteger) -> Result<SqInteger> {
+    fn get_integer(&self, idx: SqInteger) -> SqVmResult<SqInteger> {
         let mut out = 0;
-        sq_try! { self,
-            unsafe { self.getinteger(idx,  addr_of_mut!(out)) }
-        }.context(format!("Failed to get integer at idx {idx}"))?;
+        sq_try! { self, unsafe { self.getinteger(idx,  addr_of_mut!(out)) }}?;
         Ok(out)
     }
 
     /// Get the value of the bool at the `idx` position in the stack.
     #[inline]
-    fn get_bool(&self, idx: SqInteger) -> Result<bool> {
+    fn get_bool(&self, idx: SqInteger) -> SqVmResult<bool> {
         let mut out = 0;
-        sq_try! { self,
-            unsafe { self.getbool(idx, addr_of_mut!(out)) }
-        }.context(format!("Failed to get bool at idx {idx}"))?;
+        sq_try! { self, unsafe { self.getbool(idx, addr_of_mut!(out)) }}?;
         Ok(out != 0)
     }
 
     /// Gets the value of the float at the idx position in the stack.
     #[inline]
-    fn get_float(&self, idx: SqInteger) -> Result<SqFloat> {
+    fn get_float(&self, idx: SqInteger) -> SqVmResult<SqFloat> {
         let mut out = 0.0;
-        sq_try! { self,
-            unsafe { self.getfloat(idx, addr_of_mut!(out)) }
-        }.context(format!("Failed to get float at idx {idx}"))?;
+        sq_try! { self, unsafe { self.getfloat(idx, addr_of_mut!(out)) }}?;
         Ok(out)
     }
 
@@ -611,40 +593,38 @@ pub trait SqVm: VmRawApi {
     /// * `ptr` - userpointer that will point to the userdata's payload
     /// * `type_tag` -  `SQUserPointer` that will store the userdata tag(see sq_settypetag).
     #[inline]
-    fn get_userdata(&self, idx: SqInteger) -> Result<(SQUserPointer, SQUserPointer)> {
+    fn get_userdata(&self, idx: SqInteger) -> SqVmResult<(SQUserPointer, SQUserPointer)> {
         let mut ptr = std::ptr::null_mut();
         let mut typetag = std::ptr::null_mut();
         sq_try! { self,
             unsafe { self.getuserdata(idx, addr_of_mut!(ptr), addr_of_mut!(typetag)) }
-        }.context(format!("Failed to get userdata at idx {idx}"))?;
+        }?;
         Ok((ptr, typetag))
     }
 
     /// Get the value of the userpointer at the `idx` position in the stack.
     #[inline]
-    fn get_userpointer(&self, idx: SqInteger) -> Result<SQUserPointer> {
+    fn get_userpointer(&self, idx: SqInteger) -> SqVmResult<SQUserPointer> {
         let mut ptr = std::ptr::null_mut();
         sq_try! { self,
             unsafe { self.getuserpointer(idx, addr_of_mut!(ptr)) }
-        }.context(format!("Failed to get userpointer at idx {idx}"))?;
+        }?;
         Ok(ptr)
     }
 
     /// Returns the size of a value at the idx position in the stack
     /// Works only for arrays, tables, userdata, and strings
     #[inline]
-    fn get_size(&self, idx: SqInteger) -> Result<SqInteger> {
+    fn get_size(&self, idx: SqInteger) -> SqVmResult<SqInteger> {
         sq_try! { self,
             unsafe { self.getsize(idx) }
-        }.context(format!("Failed to get size of value at idx {idx}"))
+        }
     }
 
     /// Sets a `hook` that will be called before release of __userdata__ at position `idx`
     #[inline]
-    fn set_release_hook(&self, idx: SqInteger, hook: SqReleaseHook) -> Result<()> {
-        if self.get_type(idx) != SqType::UserData {
-            bail!("Value at idx {idx} isn`t a userdata");
-        }
+    fn set_release_hook(&self, idx: SqInteger, hook: SqReleaseHook) -> SqVmResult<()> {
+        sq_expect!(self.get_type(idx), SqType::UserData);
         unsafe { self.setreleasehook(idx, Some(hook)) };
         Ok(())
     }
@@ -658,7 +638,7 @@ pub trait SqVm: VmRawApi {
     /// If the execution of the function is suspended through sq_suspendvm(),
     /// the closure and the arguments will not be automatically popped from the stack.
     #[inline]
-    fn call_closure(&self, params: SqInteger, retval: bool, raise_error: bool) -> Result<()> {
+    fn call_closure(&self, params: SqInteger, retval: bool, raise_error: bool) -> SqVmResult<()> {
         sq_try! { self,
             unsafe { self.call(params, retval as _, raise_error as _) }
         }?;
@@ -694,7 +674,7 @@ pub trait SqVm: VmRawApi {
     }
 
     /// Gets an object (or it's pointer) from the stack and stores it in a object handler.
-    fn get_stack_obj(&self, idx: SqInteger) -> Result<SQObject> {
+    fn get_stack_obj(&self, idx: SqInteger) -> SqVmResult<SQObject> {
         let mut obj = Self::obj_init();
         sq_try! { self,
             unsafe { self.getstackobj(idx, addr_of_mut!(obj)) }
@@ -886,7 +866,7 @@ pub trait SqVmAdvanced<'a>:
     /// this method will fail if the closure in the stack is a native C closure.
     /// 
     /// NOTE: Feels like legacy version of `get_stack_info`
-    fn get_function_info(&self, level: SqInteger) -> Result<SqFunctionInfo> {
+    fn get_function_info(&self, level: SqInteger) -> SqVmResult<SqFunctionInfo> {
         let mut func_info = unsafe { std::mem::zeroed() };
 
         sq_try! { self,
@@ -907,9 +887,8 @@ pub trait SqVmAdvanced<'a>:
     fn get_stack_info(&self, level: SqUnsignedInteger) -> Result<SqStackInfo> {
         let mut stack_info = unsafe { std::mem::zeroed() };
 
-        //  Error string isn`t pushed in this case
         sq_try! { self,
-            nothrow unsafe { sq_stackinfos(self.handle(), level as _, addr_of_mut!(stack_info)) }
+            unsafe { sq_stackinfos(self.handle(), level as _, addr_of_mut!(stack_info)) }
         }?;
 
         let name = unsafe { cstr_to_string(stack_info.funcname) };
