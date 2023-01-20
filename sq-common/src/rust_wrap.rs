@@ -6,10 +6,9 @@ use bitflags::bitflags;
 
 use crate::raw_api::*;
 
-use anyhow::{
-    Result,
-    anyhow
-};
+use anyhow::Result;
+
+use crate::error::*;
 
 set_sqfn_paths!(sq_wrap_path = "self");
 
@@ -331,7 +330,10 @@ macro_rules! sq_try {
         {
             let out = $e;
             if out == SQ_ERROR {
-                Err(anyhow!($vm.last_error()))
+                Err(match unsafe { $vm.last_error_cstr().to_str() } {
+                    Ok(err) => SqVmError::parse(err),
+                    Err(e) => SqVmError::other(e.to_string())
+                })
             } else { Ok(out) }
         }
     };
@@ -339,10 +341,10 @@ macro_rules! sq_try {
         {
             let out = $e;
             if out == SQ_ERROR {
-                Err(anyhow!("unknown error"))
+                Err(SqVmError::Other(None))
             } else { Ok(out) }
         }
-    }
+    };
 }
 
 /// Main vm trait
@@ -360,6 +362,22 @@ pub trait SqVm: VmRawApi {
             }
             cstr_to_string(ptr)
         }
+    }
+
+    /// Get last VM error as reference, without copy
+    /// # Unsafety
+    /// This function returns reference to string which lifetime 
+    /// controlled by SQVM. It may be freed when popped from VM stack.
+    /// # Panics
+    /// Panics if failed to get error string
+    #[inline]
+    unsafe fn last_error_cstr(&self) -> &std::ffi::CStr {
+        self.getlasterror();
+        let mut ptr = std::ptr::null();
+        if self.getstring(-1, addr_of_mut!(ptr)) == SQ_ERROR {
+            panic!("Failed to get last error")
+        }
+        std::ffi::CStr::from_ptr(ptr)
     }
 
     /// Throw error string as an exception to the vm

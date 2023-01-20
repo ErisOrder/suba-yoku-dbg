@@ -56,7 +56,7 @@ pub enum SqVmError {
 impl SqVmError {
     /// Parse original error string, received from VM.
     /// All mistakes in error sentences are to match original ones...  
-    fn parse<T>(s: T) -> Self where T: AsRef<str> + Into<String> {
+    pub fn parse<T>(s: T) -> Self where T: AsRef<str> + Into<String> {
         use SqVmError::*;
         use SqType::*;
     
@@ -176,12 +176,17 @@ impl SqVmError {
             "negative size" => NegativeSize,
             "invalid stream" => InvalidStream,
             
-            other => Other(Some(other.into()))
+            other => Self::other(other)
         }
     }
 
+    /// Create new [SqVmError::Other] from string
+    pub fn other<T>(err_str: T) -> Self where T: Into<String> {
+        Self::Other(Some(err_str.into()))
+    }
+
     /// Add received type information for certain errors
-    fn type_was(mut self, t: SqType) -> Self {
+    pub fn type_was(mut self, t: SqType) -> Self {
         if let SqVmError::InvalidType { ref mut received, .. } = self {
             *received = Some(t)
         };
