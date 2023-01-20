@@ -1,9 +1,26 @@
 use thiserror::Error;
 use crate::rust_wrap::SqType;
 
+pub type SqVmResult<T> = std::result::Result<T, SqVmError>;
+
+/// Return [SqVmError::InvalidType] if type of object at is invalid 
+#[macro_export]
+macro_rules! sq_expect {
+    ($check:expr, $($valid_type:path),+) => {
+        match $check {
+            $(| $valid_type )+ => (),
+            other => return Err($crate::error::SqVmError::InvalidType {
+                expected: &[ $($valid_type, )+ ],
+                received: Some(other),
+                msg: Some("expected one of valid types")
+            })
+        } 
+    }
+}
+
 /// Strong-typed representation of SQVM errors
 #[derive(Debug, Error)]
-enum SqError {
+pub enum SqVmError {
     #[error("invalid type: expected {expected:?}, received {received:?} ({})", .msg.unwrap_or(""))]
     InvalidType {
         expected: &'static [SqType],
@@ -32,18 +49,18 @@ enum SqError {
     NegativeSize,
     #[error("invalid stream")]
     InvalidStream,
-    #[error(transparent)]
-    Other(#[from] anyhow::Error)
+    #[error("{}", .0.as_deref().unwrap_or("unknown error"))]
+    Other(Option<String>)
 }
 
-impl SqError {
+impl SqVmError {
     /// Parse original error string, received from VM.
     /// All mistakes in error sentences are to match original ones...  
-    fn parse(s: &str) -> Self {
-        use SqError::*;
+    fn parse<T>(s: T) -> Self where T: AsRef<str> + Into<String> {
+        use SqVmError::*;
         use SqType::*;
     
-        match s {
+        match s.as_ref() {
             "rawset works only on array/table/class and instance" => InvalidType { 
                 expected: &[Array, Table, Class, Instance],
                 received: None,
@@ -153,20 +170,19 @@ impl SqError {
             "call failed" => CallFailed,
             "cannot resume a vm that is not running any code" => CannotResumeIdleVm,
             "io error" => SqIoError,
-            // "invalid stream"
             "invalid free var index" => IndexError("invalid free var index"),
             "wrong index" => IndexError("wrong attribute index"),
             "empty array" => EmptyArray,
             "negative size" => NegativeSize,
             "invalid stream" => InvalidStream,
             
-            other => Other(anyhow::Error::msg(other.to_string()))
+            other => Other(Some(other.into()))
         }
     }
 
     /// Add received type information for certain errors
     fn type_was(mut self, t: SqType) -> Self {
-        if let SqError::InvalidType { ref mut received, .. } = self {
+        if let SqVmError::InvalidType { ref mut received, .. } = self {
             *received = Some(t)
         };
         self
