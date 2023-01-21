@@ -1095,6 +1095,12 @@ pub trait SqThrow<T> {
     fn throw(&self, throwable: T);
 }
 
+impl<T: SqVm> SqThrow<SqNativeClosureError> for T {
+    fn throw(&self, throwable: SqNativeClosureError) {
+        self.throw_error(throwable.to_string())
+    }
+}
+
 impl<T:SqVm> SqThrow<SqStackError> for T {
     fn throw(&self, throwable: SqStackError) {
         self.throw_error(throwable.to_string())
@@ -1347,7 +1353,7 @@ impl<T: SqVm> SqPush<bool> for T {
 impl<T: SqVm> SqGet<bool> for T {
     #[inline]
     fn get_constrain(&self, idx: SqInteger, _: Option<u32>) -> SqGetResult<bool> {
-        self.get_bool(idx).map_err(|e| e.into_stack_error("failed to get integer"))
+        self.get_bool(idx).map_err(|e| e.into_stack_error("failed to get bool"))
     }
 }
 

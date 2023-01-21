@@ -1,5 +1,5 @@
 use thiserror::Error;
-use crate::rust_wrap::{SqType, SqInteger};
+use crate::{rust_wrap::{SqType, SqInteger}, SqUnsignedInteger};
 
 pub type SqVmResult<T> = std::result::Result<T, SqVmError>;
 
@@ -28,6 +28,23 @@ macro_rules! sq_validate {
     }
 }
 
+/// Error, that can occur during native closure execution
+#[derive(Debug, Error)]
+pub enum SqNativeClosureError {
+    #[error("argument {idx} error: {reason}")]
+    ArgError {
+        idx: usize,
+        reason: SqStackError     
+    },
+    #[error("return value error: {0}")]
+    OutputError(SqStackError),
+    #[error("vararg {idx} error: {reason}")]
+    VarArgError {
+        idx: usize,
+        reason: SqStackError     
+    }
+}
+
 pub type SqCompilerResult<T> = Result<T, SqCompilerError>;
 
 /// Error received from SQ compiler
@@ -40,7 +57,7 @@ pub enum SqCompilerError {
         description: String,
         src_file: String,
     },
-    #[error("compiler error: {0}")]
+    #[error("stack error: {0}")]
     StackError(#[from] SqStackError),
     #[error(transparent)]
     Other(#[from] anyhow::Error)

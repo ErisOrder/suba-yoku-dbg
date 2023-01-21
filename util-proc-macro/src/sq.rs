@@ -258,7 +258,11 @@ pub fn sqfn_impl(
             let #normal_arg_idents: #normal_arg_types = match #vm_ident.get(idx) {
                 Ok(a) => a,
                 Err(e) => {
-                    #vm_ident.throw(e);
+                    let err = SqNativeClosureError::ArgError {
+                        idx: #arg_idx as usize,
+                        reason: e,
+                    };
+                    #vm_ident.throw(err);
                     return -1;
             }};
         )*
@@ -269,7 +273,11 @@ pub fn sqfn_impl(
                 let val: DynSqVar = match #vm_ident.get(i) {
                     Ok(a) => a,
                     Err(e) => {
-                        #vm_ident.throw(e);
+                        let err = SqNativeClosureError::VarArgError {
+                            idx: i as usize,
+                            reason: e
+                        };
+                        #vm_ident.throw(err);
                         return -1;
                 }};
                 #varargs.push(val);
@@ -291,7 +299,7 @@ pub fn sqfn_impl(
         #( 
             let _: #ret_type;
             if let Err(e) = #vm_ident.push(ret).into_result() {
-                #vm_ident.throw(e);
+                #vm_ident.throw(SqNativeClosureError::OutputError(e));
                 return -1;
             }
             return 1;
