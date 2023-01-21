@@ -18,6 +18,21 @@ macro_rules! sq_expect {
     }
 }
 
+#[derive(Debug, Error)]
+pub enum SqPushErrorReason {
+    #[error(transparent)]
+    SqVmError(SqVmError),
+    #[error(transparent)]
+    Other(anyhow::Error),
+}
+
+#[derive(Debug, Error)]
+#[error("{msg}: {reason}")]
+pub struct SqPushError {
+    reason: SqPushErrorReason,
+    msg: &'static str    
+}
+
 /// Strong-typed representation of SQVM errors
 #[derive(Debug, Error)]
 pub enum SqVmError {
@@ -192,6 +207,9 @@ impl SqVmError {
         };
         self
     }
-    
+
+    pub fn into_push_error(self, msg: &'static str) -> SqPushError {
+        SqPushError { reason: SqPushErrorReason::SqVmError(self), msg }
+    }
 }
 

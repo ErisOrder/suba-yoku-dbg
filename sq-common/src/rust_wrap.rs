@@ -782,7 +782,7 @@ pub trait SqVmIterators<'vm>: SqVm where Self: Sized {
     ) -> SqArrayIter<'vm, Self, T> {
         // Push a reference to an array to the stack top and a null iterator
         self.ref_idx(idx);
-        self.push(SqNull).ok();
+        self.push_null();
 
         SqArrayIter { vm: self, max_depth, _type: PhantomData }
     }
@@ -795,7 +795,7 @@ pub trait SqVmIterators<'vm>: SqVm where Self: Sized {
     ) -> SqTableIter<'vm, Self, K, V> {
         // Push a reference to an array to the stack top and a null iterator
         self.ref_idx(idx);
-        self.push(SqNull).ok();
+        self.push_null();
 
         SqTableIter { vm: self, max_depth, _type: PhantomData }
     }
@@ -852,8 +852,7 @@ pub trait SqVmAdvanced<'a>:
             }
         );
 
-        <Self as SqPush<SqBoxedClosure>>::push(self, debug_hook_glue)
-            .expect("Failed to push debug hook closure");
+        <Self as SqPush<SqBoxedClosure>>::push(self, debug_hook_glue);
 
         unsafe {
             self.setdebughook();
@@ -953,8 +952,8 @@ pub trait SqVmAdvanced<'a>:
     /// Bind rust native function to root table of SQVM
     fn register_function(&self, name: &'a str, func: SqFunction) {
         self.push_root_table();
-        self.push(name).expect("Failed to push closure name");
-        self.push(func).expect("Failed to push function");
+        self.push(name);
+        self.push(func);
         self.new_slot(-3, false).expect("Failed to create slot in root table");
         self.pop(1);
     }
@@ -962,8 +961,8 @@ pub trait SqVmAdvanced<'a>:
     /// Bind rust native closure to root table of SQVM 
     fn register_closure(&self, name: &'a str, closure: Box<SqFnClosure>) {
         self.push_root_table();
-        self.push(name).expect("failed to push closure name");
-        self.push(closure).expect("Failed to push closure");
+        self.push(name);
+        self.push(closure);
         self.new_slot(-3, false).expect("Failed to create slot in root table");
         self.pop(1);
     }
@@ -988,8 +987,7 @@ pub trait SqVmAdvanced<'a>:
                 });
 
                 let ptr = Box::leak(err) as *mut SqCompilerError;
-                UnsafeVm::from_handle(vm).push(ptr)
-                    .expect("Failed to push compiler error");
+                UnsafeVm::from_handle(vm).push(ptr);
             }
         }
         
@@ -1035,10 +1033,40 @@ where
     T: SqVm + SqPush<&'a str> + SqPush<SqFunction>
 {}
 
+type SqPushResult = Result<(), SqPushError>;
+/// Helper trait that defines shared behaviour 
+/// for implementing fallible [SqPush].
+pub trait IntoPushResult { 
+    /// Convert struct to Result
+    fn into_result(self) -> SqPushResult;
+    fn default_self() -> Self;
+}
+
+impl IntoPushResult for () {
+    /// Infallible
+    fn into_result(self) -> SqPushResult {
+        Ok(())
+    }
+
+    fn default_self() -> Self {}
+}
+
+impl IntoPushResult for Result<(), SqPushError> {
+    /// Just pass through
+    fn into_result(self) -> SqPushResult {
+        self
+    }
+
+    fn default_self() -> Self {
+        Ok(())
+    }
+} 
+
 /// Trait for pushing values to vm stack
 pub trait SqPush<T> {
+    type Output: IntoPushResult;
     /// Push a value to the vm stack
-    fn push(&self, val: T) -> Result<()>;
+    fn push(&self, val: T) -> Self::Output;
 }
 
 /// Trait for getting values from the vm stack
@@ -1084,7 +1112,9 @@ impl<T: SqVm> SqThrow<anyhow::Error> for T {
 impl<VM> SqPush<SqBoxedClosure> for VM
 where VM: SqPush<SqUserData> + SqVm
 {
-    fn push(&self, val: SqBoxedClosure) -> Result<()> {
+    type Output = ();
+    
+    fn push(&self, val: SqBoxedClosure) {
         // Indirection to make fat pointer usable through FFI
         let clos_box = Box::new(val); 
 
@@ -1115,30 +1145,30 @@ where VM: SqPush<SqUserData> + SqVm
         let raw = Box::leak(clos_box) as *mut SqBoxedClosure;
         let data: Vec<_> = (raw as usize).to_ne_bytes().into();
 
-        self.push(SqUserData::from(data)).expect("Failed to push closure box ptr");
+        self.push(SqUserData::from(data));
         self.set_release_hook(-1, release_hook).expect("Failed to set box release hook");
 
         unsafe {
             self.new_closure(glue, 1);
         }
-
-        Ok(())
     }
 }
 
 impl<T: SqVm> SqPush<SqFunction> for T {
+    type Output = ();
+    
     #[inline]
-    fn push(&self, val: SqFunction) -> Result<()> {
+    fn push(&self, val: SqFunction) {
         unsafe { self.new_closure(val, 0) }
-        Ok(())
     }
 }
 
 impl<T: SqVm> SqPush<SqInteger> for T {
+    type Output = ();
+    
     #[inline]
-    fn push(&self, val: SqInteger) -> Result<()> {
+    fn push(&self, val: SqInteger) {
         self.push_integer(val);
-        Ok(())
     }
 }
 
@@ -1150,18 +1180,20 @@ impl<T: SqVm> SqGet<SqInteger> for T {
 }
 
 impl<T: SqVm> SqPush<String> for T {
+    type Output = ();
+    
     #[inline]
-    fn push(&self, val: String) -> Result<()> {
+    fn push(&self, val: String) {
         unsafe { self.push_string(val.as_ptr(), val.len() as _) }
-        Ok(())
     }
 }
 
 impl<T: SqVm> SqPush<&str> for T {
+    type Output = ();
+    
     #[inline]
-    fn push(&self, val: &str) -> Result<()> {
+    fn push(&self, val: &str) {
         unsafe { self.push_string(val.as_ptr(), val.len() as _) }
-        Ok(())
     }
 }
 
@@ -1177,10 +1209,11 @@ impl<T: SqVm> SqGet<String> for T {
 
 /// Just for abstraction...
 impl<T: SqVm> SqPush<SqNull> for T {
+    type Output = ();
+    
     #[inline]
-    fn push(&self, _: SqNull) -> Result<()> {
+    fn push(&self, _: SqNull) {
         self.push_null();
-        Ok(())
     }
 }
 
@@ -1200,14 +1233,16 @@ impl<VM, T> SqPush<Vec<T>> for VM
 where 
     VM: SqPush<T> + SqPush<SqInteger> + SqVm
 {
-    fn push(&self, val: Vec<T>) -> Result<()> {
+    type Output = SqPushResult; 
+    
+    fn push(&self, val: Vec<T>) -> Self::Output {
         self.new_array(val.len());
 
         for (index, elem) in val.into_iter().enumerate() {
-            self.push(index as SqInteger).context("Failed to push index to stack")?;
-            self.push(elem).context("Failed to push element to stack")?;
+            self.push(index as SqInteger);
+            self.push(elem).into_result()?;
             self.slot_set(-3)
-                .context(format!("Failed to append element at index {index}"))?;
+                .map_err(|e| e.into_push_error("failed to set array slot"))?;
         }
         Ok(())
     }
@@ -1236,15 +1271,17 @@ impl<VM, K, V> SqPush<IndexMap<K, V>> for VM
 where 
     VM: SqPush<K> + SqPush<V> + SqVm,
 {
-    fn push(&self, val: IndexMap<K, V>) -> Result<()> {
+    type Output = SqPushResult;
+    
+    fn push(&self, val: IndexMap<K, V>) -> Self::Output {
         self.new_table();
 
         for (key, val) in val.into_iter() {
-            self.push(key).context("Failed to push key to the stack")?;
-            self.push(val).context("Failed to push value to the stack")?;
+            self.push(key).into_result()?;
+            self.push(val).into_result()?;
 
             self.new_slot(-3, false)
-                .context("Failed to create new table slot")?;
+                .map_err(|e| e.into_push_error("failed to set table slot"))?;
         }
         Ok(())
     }
@@ -1276,10 +1313,11 @@ where
 }
 
 impl<T: SqVm> SqPush<SqFloat> for T {
+    type Output = ();
+    
     #[inline]
-    fn push(&self, val: SqFloat) -> Result<()> {
+    fn push(&self, val: SqFloat) {
         self.push_float(val);
-        Ok(())
     }
 }
 
@@ -1291,10 +1329,11 @@ impl<T: SqVm> SqGet<SqFloat> for T {
 }
 
 impl<T: SqVm> SqPush<bool> for T {
+    type Output = ();
+    
     #[inline]
-    fn push(&self, val: bool) -> Result<()> {
+    fn push(&self, val: bool) {
         self.push_bool(val);
-        Ok(())
     }
 }
 
@@ -1307,14 +1346,15 @@ impl<T: SqVm> SqGet<bool> for T {
 
 
 impl<T: SqVm> SqPush<SqUserData> for T {
+    type Output = ();
+    
     #[inline]
-    fn push(&self, val: SqUserData) -> Result<()> {
+    fn push(&self, val: SqUserData) {
         let val = val.unwrap();
         unsafe { 
             let ptr = self.new_userdata(val.len() as _);
             std::ptr::copy(val.as_ptr() as _, ptr, val.len());
         }
-        Ok(())
     }
 }
 
@@ -1339,12 +1379,17 @@ impl<T: SqVm> SqGet<SqUserData> for T {
 
 impl<VM, T> SqPush<Option<T>> for VM 
 where 
-    VM: SqPush<T> + SqVm
+    VM: SqPush<T> + SqVm,
 {
-    fn push(&self, val: Option<T>) -> Result<()> {
+    type Output = <VM as SqPush<T>>::Output;
+    
+    fn push(&self, val: Option<T>) -> Self::Output {
         match val {
             Some(v) => self.push(v),
-            None => SqPush::<SqNull>::push(self, SqNull),
+            None => {
+                SqPush::<SqNull>::push(self, SqNull);
+                Self::Output::default_self()     
+            },
         }
     }
 }
@@ -1387,7 +1432,7 @@ where
         let next_depth = max_depth.map(|d| d - 1);
         for (key, val) in &mut proto {
             // Push class field/method key and get instance value
-            self.push(key.clone())?;
+            self.push(key.clone()).into_result()?;
             self.slot_get_raw(idx - idx.is_negative() as i32)?;
 
             *val = self.get_constrain(-1, next_depth)?;
@@ -1511,9 +1556,10 @@ where VM: SqVm
 impl<VM, T> SqPush<SqUserPointer<T>> for VM 
 where VM: SqVm
 {
-    fn push(&self, val: SqUserPointer<T>) -> Result<()> {
+    type Output = ();
+    
+    fn push(&self, val: SqUserPointer<T>) {
         unsafe { self.push_userpointer(val as _) };
-        Ok(())
     }
 }
 
@@ -1740,16 +1786,18 @@ where
     VM: SqVm + SqGet<SqNull> // TODO: Why this is working?
     
 {
-    fn push(&self, val: DynSqVar) -> Result<()> {
+    type Output = SqPushResult;
+    
+    fn push(&self, val: DynSqVar) -> Self::Output {
         match val {
-            DynSqVar::Null => self.push(SqNull),
-            DynSqVar::Integer(i) => self.push(i),
-            DynSqVar::String(s) => self.push(s),
-            DynSqVar::Array(v) => self.push(v),
-            DynSqVar::Float(f) => self.push(f),
-            DynSqVar::Bool(b) => self.push(b),
-            DynSqVar::Table(t) => self.push(t),
-            DynSqVar::UserData(u) => self.push(u),
+            DynSqVar::Null => self.push(SqNull).into_result(),
+            DynSqVar::Integer(i) => self.push(i).into_result(),
+            DynSqVar::String(s) => self.push(s).into_result(),
+            DynSqVar::Array(v) => self.push(v).into_result(),
+            DynSqVar::Float(f) => self.push(f).into_result(),
+            DynSqVar::Bool(b) => self.push(b).into_result(),
+            DynSqVar::Table(t) => self.push(t).into_result(),
+            DynSqVar::UserData(u) => self.push(u).into_result(),
             _ => unimplemented!(),
         }
     }
@@ -1803,9 +1851,9 @@ where VM: VmRawApi {
 
 impl <VM> SqPush<SqUnit> for VM
 where VM: VmRawApi {
-    fn push(&self, _: SqUnit) -> Result<()> {
-        Ok(())
-    }
+    type Output = ();
+    
+    fn push(&self, _: SqUnit) {}
 }
 
 
@@ -1844,8 +1892,9 @@ where VM: SqVm {
 
 impl<VM> SqPush<SqObjectRef<'_, VM>> for VM
 where VM: SqVm {
-    fn push(&self, val: SqObjectRef<'_, VM>) -> Result<()> {
+    type Output = ();
+    
+    fn push(&self, val: SqObjectRef<'_, VM>) {
         self.push_stack_obj(&val.obj);
-        Ok(())
     }
 }
