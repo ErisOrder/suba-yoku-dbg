@@ -1,4 +1,3 @@
-use anyhow::{bail, Context};
 use squirrel2_kaleido_rs::*;
 use util_proc_macro::{set_sqfn_paths, sq_closure};
 use std::{ptr::{addr_of_mut, addr_of}, cmp::Ordering, hash::Hash, fmt::Write, marker::PhantomData};
@@ -6,7 +5,7 @@ use bitflags::bitflags;
 
 use crate::{raw_api::*, sq_expect, sq_validate};
 
-use anyhow::Result;
+// use anyhow::Result;
 
 use crate::error::*;
 
@@ -14,6 +13,7 @@ set_sqfn_paths!(sq_wrap_path = "self");
 
 /// Re-export
 pub use crate::raw_api as raw_api;
+pub use crate::error as error;
 pub use indexmap::IndexMap;
 pub use squirrel2_kaleido_rs::HSQUIRRELVM;
 
@@ -119,25 +119,6 @@ pub struct DebugEventWithSrc {
     pub event: DebugEvent,
     pub src: Option<String>
 }
-
-/// Error received from SQ compiler
-#[derive(Clone, PartialEq, PartialOrd, Eq, Ord, Debug, Hash)]
-#[repr(C)]
-pub struct SqCompilerError {
-    pub line: SqInteger,
-    pub column: SqInteger,
-    pub description: String,
-    pub source: String,
-}
-
-impl std::fmt::Display for SqCompilerError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let SqCompilerError { line, column, description, source } = self;
-        write!(f, "{source}:{line}:{column}: error: {description}")
-    }
-}
-
-impl std::error::Error for SqCompilerError {}
 
 /// Rust-adapted SQObjectType enum
 #[derive(Copy, Clone, PartialEq, PartialOrd, Eq, Ord, Debug, Hash)]
@@ -330,7 +311,10 @@ macro_rules! sq_try {
         {
             let out = $e;
             if out == SQ_ERROR {
-                Err(match unsafe { $vm.last_error_cstr().map(|c| c.to_str()) } {
+                let err = unsafe { $vm.last_error_cstr().map(|c| c.to_str()) }; 
+                // TODO: Resolve issue with errors that were left not by this macro...
+                $vm.reset_error();
+                Err(match err {
                     Some(Ok(err)) => SqVmError::parse(err),
                     Some(Err(e)) => SqVmError::other(e.to_string()),
                     None => SqVmError::Other(None),
@@ -338,6 +322,16 @@ macro_rules! sq_try {
             } else { Ok(out) }
         }
     };
+    ($vm:expr, nothrow $e:expr) => {
+        {
+            let out = $e;
+            if out == SQ_ERROR {
+                Err(SqVmError::Other(None))
+            } else {
+                Ok(out)
+            }
+        }
+    }
 }
 
 /// Main vm trait
@@ -507,10 +501,10 @@ pub trait SqVm: VmRawApi {
     /// Args:
     /// - `src_name` - the symbolic name of the program (used only for debugging)
     /// - `raise_err` - if `true`, vm will call compiler error handler
-    fn compile_string(&self, script: String, mut src_name: String, raise_err: bool) -> Result<()> {
+    fn compile_string(&self, script: String, mut src_name: String, raise_err: bool) -> SqVmResult<()> {
         src_name.push('\0');
 
-        sq_try! { self, unsafe { 
+        sq_try! { self, nothrow unsafe { 
             self.compilebuffer(
                 script.as_ptr() as _,
                 script.len() as _,
@@ -883,10 +877,10 @@ pub trait SqVmAdvanced<'a>:
     }
 
     /// Retrieve the call stack informations of a certain `level` in the calls stack
-    fn get_stack_info(&self, level: SqUnsignedInteger) -> Result<SqStackInfo> {
+    fn get_stack_info(&self, level: SqUnsignedInteger) -> SqVmResult<SqStackInfo> {
         let mut stack_info = unsafe { std::mem::zeroed() };
 
-        sq_try! { self,
+        sq_try! { self, nothrow
             unsafe { sq_stackinfos(self.handle(), level as _, addr_of_mut!(stack_info)) }
         }?;
 
@@ -912,7 +906,7 @@ pub trait SqVmAdvanced<'a>:
             level: SqUnsignedInteger,
             idx: SqUnsignedInteger,
             max_depth: Option<u32>,
-            ) -> Result<Option<SqLocalVar>> {
+            ) -> SqGetResult<Option<SqLocalVar>> {
         let ptr = unsafe { sq_getlocal(self.handle(), level, idx) };
         if ptr != 0 as _ {
             let name = unsafe { cstr_to_string(ptr) };
@@ -935,7 +929,7 @@ pub trait SqVmAdvanced<'a>:
             &self,
             level: SqUnsignedInteger,
             idx: SqUnsignedInteger
-    ) -> Result<Option<SqLocalVarHandle<'_, Self>>> {
+    ) -> SqGetResult<Option<SqLocalVarHandle<'_, Self>>> {
         let ptr = unsafe { sq_getlocal(self.handle(), level, idx) };
         if ptr != 0 as _ {
             let name = unsafe { cstr_to_string(ptr) };
@@ -968,7 +962,7 @@ pub trait SqVmAdvanced<'a>:
     }
 
     /// Compile and arbitrary squirrel script
-    fn compile_closure(&self, script: String, src_file: String) -> Result<()> {
+    fn compile_closure(&self, script: String, src_file: String) -> SqCompilerResult<()> {
 
         /// This handler will push SqCompilerError ptr to stack as userdata
         extern "C" fn error_handler(
@@ -979,11 +973,11 @@ pub trait SqVmAdvanced<'a>:
             column: SqInteger,
         ) {
             unsafe { 
-                let err = Box::new(SqCompilerError {
+                let err = Box::new(SqCompilerError::CompileError {
                     line,
                     column,
                     description: cstr_to_string(desc),
-                    source: cstr_to_string(src),
+                    src_file: cstr_to_string(src),
                 });
 
                 let ptr = Box::leak(err) as *mut SqCompilerError;
@@ -996,8 +990,7 @@ pub trait SqVmAdvanced<'a>:
         self.set_compiler_error_handler(None);
 
         if compile_res.is_err() {
-            let err_box: SqUserPointer<SqCompilerError> = self.get(-1)
-                .context("Failed to get error userdata")?;
+            let err_box: SqUserPointer<SqCompilerError> = self.get(-1)?;
 
             let err: Box<SqCompilerError> = unsafe {
                 Box::from_raw(err_box)
@@ -1006,7 +999,7 @@ pub trait SqVmAdvanced<'a>:
             // Pop error
             self.pop(1);
 
-            bail!(err);
+            return Err(*err);
         };
         Ok(())
     }
@@ -1016,8 +1009,9 @@ pub trait SqVmAdvanced<'a>:
     /// `depth` is depth of eager return value containers expansion.
     ///
     /// Returns [SqNull] if closure does not return anything.
-    fn closure_call(&self, argc: SqInteger, depth: Option<SqUnsignedInteger>) -> Result<DynSqVar> {
-        self.call_closure(argc, true, false)?;
+    fn closure_call(&self, argc: SqInteger, depth: Option<SqUnsignedInteger>) -> SqGetResult<DynSqVar> {
+        self.call_closure(argc, true, false)
+            .map_err(|e| e.into_stack_error("failed to call closure"))?;
         let ret = self.get_constrain(-1, depth)?;
 
         // Pop retval
@@ -1033,8 +1027,8 @@ where
     T: SqVm + SqPush<&'a str> + SqPush<SqFunction>
 {}
 
-type SqGetResult<T> = Result<T, SqStackError>;
-type SqPushResult = Result<(), SqStackError>;
+pub type SqGetResult<T> = Result<T, SqStackError>;
+pub type SqPushResult = Result<(), SqStackError>;
 /// Helper trait that defines shared behaviour 
 /// for implementing fallible [SqPush].
 pub trait IntoPushResult { 
@@ -1101,6 +1095,11 @@ pub trait SqThrow<T> {
     fn throw(&self, throwable: T);
 }
 
+impl<T:SqVm> SqThrow<SqStackError> for T {
+    fn throw(&self, throwable: SqStackError) {
+        self.throw_error(throwable.to_string())
+    }
+}
 
 impl<T: SqVm> SqThrow<anyhow::Error> for T {
     fn throw(&self, throwable: anyhow::Error) {

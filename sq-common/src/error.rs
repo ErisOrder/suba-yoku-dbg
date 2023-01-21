@@ -1,5 +1,5 @@
 use thiserror::Error;
-use crate::rust_wrap::SqType;
+use crate::rust_wrap::{SqType, SqInteger};
 
 pub type SqVmResult<T> = std::result::Result<T, SqVmError>;
 
@@ -28,6 +28,24 @@ macro_rules! sq_validate {
     }
 }
 
+pub type SqCompilerResult<T> = Result<T, SqCompilerError>;
+
+/// Error received from SQ compiler
+#[derive(Debug, Error)]
+pub enum SqCompilerError {
+    #[error("compile error: {src_file}:{line}:{column}: {description}")]
+    CompileError {
+        line: SqInteger,
+        column: SqInteger,
+        description: String,
+        src_file: String,
+    },
+    #[error("compiler error: {0}")]
+    StackError(#[from] SqStackError),
+    #[error(transparent)]
+    Other(#[from] anyhow::Error)
+}
+
 #[derive(Debug, Error)]
 pub enum SqStackErrorReason {
     #[error(transparent)]
@@ -35,7 +53,7 @@ pub enum SqStackErrorReason {
     #[error("reached max expansion depth")]
     MaxDepthReached,
     #[error(transparent)]
-    Other(anyhow::Error),
+    Other(#[from] anyhow::Error),
 }
 
 #[derive(Debug, Error)]
