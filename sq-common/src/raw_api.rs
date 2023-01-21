@@ -111,6 +111,9 @@ pub trait VmRawApi: VmHandle {
 
         safe get_from_slot ->  sq_get(v: HSQUIRRELVM, idx: SQInteger) -> SQRESULT;
         safe set_to_slot -> sq_set(v: HSQUIRRELVM, idx: SQInteger) -> SQRESULT;
+        
+        /// Resets the last error in the virtual machine to null
+        safe reset_error -> sq_reseterror(v: HSQUIRRELVM);
     }
 
     // Unsafe renamed methods
@@ -260,7 +263,6 @@ pub trait VmRawApi: VmHandle {
             nval: SQUnsignedInteger
         ) -> *const SQChar;
         throwerror(v: HSQUIRRELVM, err: *const SQChar) -> SQRESULT;
-        reseterror(v: HSQUIRRELVM);
         getlasterror(v: HSQUIRRELVM);
         getstackobj(v: HSQUIRRELVM, idx: SQInteger, po: *mut HSQOBJECT) -> SQRESULT;
         pushobject(v: HSQUIRRELVM, obj: HSQOBJECT);

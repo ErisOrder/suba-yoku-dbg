@@ -4,15 +4,15 @@ use darling::{FromMeta, ToTokens};
 use syn::{
     AttributeArgs, ItemFn, parse_macro_input, Ident, Visibility, FnArg, Pat, Path,
     ExprClosure, Type, NestedMeta, parse::{Parse, ParseStream}, Token,
-    bracketed, parenthesized
+    bracketed, parenthesized, parse_quote
 };
 
 #[derive(Debug, FromMeta, Default)]
 pub struct SQFnMacroArgs {
     #[darling(default)]
-    vm_var: Option<String>,
+    vm_var: Option<Ident>,
     #[darling(default)]
-    varargs: Option<String>,
+    varargs: Option<Ident>,
     #[darling(default)]
     sq_wrap_path: Option<String>,
     #[darling(default)]
@@ -189,11 +189,8 @@ pub fn sqfn_impl(
     let arg_idx = 0..normal_args.len();
 
     let varargs = match args.varargs {
-        Some(s) => {
-            let ident = Ident::new(&s, Span::call_site());
-            let arg = quote!{ mut #ident: Vec<#sq_wrapper_mod::DynSqVar> }.into();
-            let arg = parse_macro_input!( arg as FnArg );
-
+        Some(ident) => {
+            let arg = parse_quote! { mut #ident: Vec<#sq_wrapper_mod::DynSqVar> };
             match &mut item {
                 ItemSqFn::ItemFn(item) => item.sig.inputs.push(arg),
                 ItemSqFn::Closure(item) => {
@@ -202,7 +199,7 @@ pub fn sqfn_impl(
                 }
             };
 
-            debug_args_fmt += &format!("{s} = {{:?}}; ");
+            debug_args_fmt += &format!("{ident} = {{:?}}; ");
             vec![ident]
         } 
         None => vec![],
@@ -221,11 +218,8 @@ pub fn sqfn_impl(
     };
 
     let (vm_ident, vm_option) = match args.vm_var {
-        Some(s) => {
-            let ident = Ident::new(&s, Span::call_site());
-            let arg = quote!{ #ident: &#sq_wrapper_mod::FriendVm }.into();
-            let arg = parse_macro_input!( arg as FnArg );
-
+        Some(ident) => {
+            let arg = parse_quote!{ #ident: &#sq_wrapper_mod::FriendVm };
             match &mut item {
                 ItemSqFn::ItemFn(item) => item.sig.inputs.push(arg),
                 ItemSqFn::Closure(item) => {
@@ -246,6 +240,7 @@ pub fn sqfn_impl(
         use log::debug;
         use #sq_wrapper_mod::*;
         use #sq_wrapper_mod::raw_api::*;
+        use #sq_wrapper_mod::error::*;
     };
 
     let sq_fn_body_start = quote! {
@@ -263,9 +258,11 @@ pub fn sqfn_impl(
             let #normal_arg_idents: #normal_arg_types = match #vm_ident.get(idx) {
                 Ok(a) => a,
                 Err(e) => {
-                    #vm_ident.throw(e.context(
-                        format!("problem with argument {}", idx)
-                    ));
+                    let err = SqNativeClosureError::ArgError {
+                        idx: #arg_idx as usize,
+                        reason: e,
+                    };
+                    #vm_ident.throw(err);
                     return -1;
             }};
         )*
@@ -276,9 +273,11 @@ pub fn sqfn_impl(
                 let val: DynSqVar = match #vm_ident.get(i) {
                     Ok(a) => a,
                     Err(e) => {
-                        #vm_ident.throw(e.context(
-                            format!("problem with vararg {}", i)
-                        ));
+                        let err = SqNativeClosureError::VarArgError {
+                            idx: i as usize,
+                            reason: e
+                        };
+                        #vm_ident.throw(err);
                         return -1;
                 }};
                 #varargs.push(val);
@@ -299,8 +298,8 @@ pub fn sqfn_impl(
         // if return type exists, push it and return 1
         #( 
             let _: #ret_type;
-            if let Err(e) = #vm_ident.push(ret) {
-                #vm_ident.throw(e.context("failed to push return value"));
+            if let Err(e) = #vm_ident.push(ret).into_result() {
+                #vm_ident.throw(SqNativeClosureError::OutputError(e));
                 return -1;
             }
             return 1;

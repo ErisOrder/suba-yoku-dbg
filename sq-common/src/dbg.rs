@@ -3,7 +3,7 @@ use anyhow::{Result, bail, anyhow};
 use atomic::{Atomic, Ordering};
 use crossbeam::channel::{bounded, unbounded, Receiver, Sender};
 use serde::{Serialize, Deserialize};
-use crate::rust_wrap::*;
+use crate::{rust_wrap::*, error::{SqCompilerError, SqCompilerResult}};
 use crate::raw_api::VmRawApi;
 
 const RECV_TIMEOUT: Duration = Duration::from_secs(10);
@@ -69,7 +69,7 @@ pub type SqBacktrace = Vec<SqStackInfo>;
 pub enum DebugResp {
     Backtrace(SqBacktrace),
     Locals(Option<Vec<SqLocalVarWithLvl>>),
-    EvalResult(Result<DynSqVar>),
+    EvalResult(Result<DynSqVar, SqCompilerError>),
 }
 
 /// Struct for holding breakpoint data. At least 1 condition field must be specified for it to work 
@@ -356,12 +356,13 @@ impl SqDebugger
                                     },
                                     Ok(None) => {
                                         resp_tx.send(DebugResp::EvalResult(
-                                            Err(anyhow!("local {l_name} not found at level {lvl}"))
-                                        )).unwrap();
+                                            Err( 
+                                                anyhow!("local {l_name} not found at level {lvl}").into(),
+                                            ))).unwrap();
                                         break 'eval;
                                     }
                                     Err(e) => {
-                                        resp_tx.send(DebugResp::EvalResult(Err(e))).unwrap();
+                                        resp_tx.send(DebugResp::EvalResult(Err(e.into()))).unwrap();
                                         break 'eval;
                                     },
                                 }
@@ -375,7 +376,7 @@ impl SqDebugger
                             debugging = debug;
                         }
 
-                        let res: Result<DynSqVar> = try {
+                        let res: Result<DynSqVar, SqCompilerError> = try {
                             vm.compile_closure(script, "eval.nut".into())?;
 
                             vm.push(env)?;
@@ -484,15 +485,15 @@ impl SqDebugger
         script: String,
         capture_locals: Vec<SqCaptureLocal>,
         depth: SqUnsignedInteger
-    ) -> Result<DynSqVar> {
+    ) -> SqCompilerResult<DynSqVar> {
         self.sender.send(DebugMsg::Eval(SqScriptDesc {
             capture: capture_locals, script, depth, debug: false
-        }))?;
+        })).map_err(|e| anyhow!(e))?;
 
         match self.receiver.recv_timeout(RECV_TIMEOUT) {
             Ok(DebugResp::EvalResult(res)) => res,
-            Ok(r) => bail!("{r:?}: expected eval result"),
-            Err(e) => bail!(e)
+            Ok(r) => Err(anyhow!("{r:?}: expected eval result").into()),
+            Err(e) => Err(anyhow!(e).into())
         }
     }
 
@@ -509,7 +510,7 @@ impl SqDebugger
         script: String,
         capture_locals: Vec<SqCaptureLocal>,
         depth: SqUnsignedInteger
-    ) -> Result<impl Fn() -> Result<DynSqVar>> {
+    ) -> Result<impl Fn() -> SqCompilerResult<DynSqVar>> {
         self.sender.send(DebugMsg::Eval(SqScriptDesc {
             capture: capture_locals, script, depth, debug: true
         }))?;
@@ -518,8 +519,8 @@ impl SqDebugger
 
         Ok(move || match receiver.recv() {
             Ok(DebugResp::EvalResult(res)) => res,
-            Ok(r) => bail!("{r:?}: expected eval result"),
-            Err(e) => bail!(e)
+            Ok(r) => Err(anyhow!("{r:?}: expected eval result").into()),
+            Err(e) => Err(anyhow!(e).into())
         })
     }
 

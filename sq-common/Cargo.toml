@@ -16,3 +16,4 @@ log = { workspace = true }
 atomic = { workspace = true }
 crossbeam = { workspace = true }
 serde = { workspace = true }
+thiserror = { workspace = true }
