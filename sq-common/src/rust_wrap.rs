@@ -4,7 +4,7 @@ use util_proc_macro::{set_sqfn_paths, sq_closure};
 use std::{ptr::{addr_of_mut, addr_of}, cmp::Ordering, hash::Hash, fmt::Write, marker::PhantomData};
 use bitflags::bitflags;
 
-use crate::{raw_api::*, sq_expect};
+use crate::{raw_api::*, sq_expect, sq_validate};
 
 use anyhow::Result;
 
@@ -713,7 +713,7 @@ impl<VM, T> Iterator for SqArrayIter<'_, VM, T>
 where 
     VM: SqVm + SqGet<T>
 {
-    type Item = Result<T>;
+    type Item = SqGetResult<T>;
 
     fn next(&mut self) -> Option<Self::Item> {
         let next_depth = self.max_depth.map(|d| d - 1);
@@ -724,7 +724,7 @@ where
                 self.vm.pop(2);
             }
 
-            elem.context("Failed to get array value")
+            elem
         })
     }
 }
@@ -749,19 +749,19 @@ impl<VM, K, V> Iterator for SqTableIter<'_, VM, K, V>
 where 
     VM: SqVm + SqGet<K> + SqGet<V>
 {
-    type Item = Result<(K, V)>;
+    type Item = SqGetResult<(K, V)>;
 
     fn next(&mut self) -> Option<Self::Item> {
         let next_depth = self.max_depth.map(|d| d - 1);
         self.vm.sq_iter_next(-3).map(|_| {
             let val: V = match self.vm.get_constrain(-1, next_depth) {
                 Ok(v) => v,
-                Err(e) => return Err(e.context("Failed to get table value")),
+                Err(e) => return Err(e),
             };
 
             let key: K = match self.vm.get_constrain(-2, next_depth) {
                 Ok(k) => k,
-                Err(e) => return Err(e.context("Failed to get table key")),
+                Err(e) => return Err(e),
             };
 
             // Pop key-val
@@ -1033,7 +1033,8 @@ where
     T: SqVm + SqPush<&'a str> + SqPush<SqFunction>
 {}
 
-type SqPushResult = Result<(), SqPushError>;
+type SqGetResult<T> = Result<T, SqStackError>;
+type SqPushResult = Result<(), SqStackError>;
 /// Helper trait that defines shared behaviour 
 /// for implementing fallible [SqPush].
 pub trait IntoPushResult { 
@@ -1051,7 +1052,7 @@ impl IntoPushResult for () {
     fn default_self() -> Self {}
 }
 
-impl IntoPushResult for Result<(), SqPushError> {
+impl IntoPushResult for Result<(), SqStackError> {
     /// Just pass through
     fn into_result(self) -> SqPushResult {
         self
@@ -1064,7 +1065,11 @@ impl IntoPushResult for Result<(), SqPushError> {
 
 /// Trait for pushing values to vm stack
 pub trait SqPush<T> {
+    /// Most [SqPush] implementations are infallible,
+    /// so we need this associated type for more complex cases
+    /// like rust containers
     type Output: IntoPushResult;
+    
     /// Push a value to the vm stack
     fn push(&self, val: T) -> Self::Output;
 }
@@ -1078,14 +1083,14 @@ pub trait SqGet<T> {
     /// Limit containers' recursion with `max_depth`.
     /// 
     /// This method mainly exists to prevent eternal recursion of self-referential containers.
-    fn get_constrain(&self, idx: SqInteger, max_depth: Option<u32>) -> Result<T>;
+    fn get_constrain(&self, idx: SqInteger, max_depth: Option<u32>) -> SqGetResult<T>;
      
     /// Get value from the vm stack at position `idx`
     /// 
     /// if `idx` < 0, count from the top, else from the stack bottom
     /// 
     /// Do not limit recursion
-    fn get(&self, idx: SqInteger) -> Result<T> {
+    fn get(&self, idx: SqInteger) -> SqGetResult<T> {
         self.get_constrain(idx, None)
     }
 }
@@ -1174,8 +1179,8 @@ impl<T: SqVm> SqPush<SqInteger> for T {
 
 impl<T: SqVm> SqGet<SqInteger> for T {
     #[inline]
-    fn get_constrain(&self, idx: SqInteger, _: Option<u32>) -> Result<SqInteger> {
-        self.get_integer(idx)
+    fn get_constrain(&self, idx: SqInteger, _: Option<u32>) -> SqGetResult<SqInteger> {
+        self.get_integer(idx).map_err(|e| e.into_stack_error("failed to get integer"))
     }
 }
 
@@ -1199,9 +1204,10 @@ impl<T: SqVm> SqPush<&str> for T {
 
 // TODO: Use get_size() to make this more safe
 impl<T: SqVm> SqGet<String> for T {
-    fn get_constrain(&self, idx: SqInteger, _: Option<u32>) -> Result<String> {
+    fn get_constrain(&self, idx: SqInteger, _: Option<u32>) -> SqGetResult<String> {
         unsafe {
-            let ptr = self.get_string(idx)?;
+            let ptr = self.get_string(idx)
+                .map_err(|e| e.into_stack_error("failed to get string"))?;
             Ok(cstr_to_string(ptr as _))
         }
     }
@@ -1220,12 +1226,10 @@ impl<T: SqVm> SqPush<SqNull> for T {
 /// For type safety
 impl<T: SqVm> SqGet<SqNull> for T {
     #[inline]
-    fn get_constrain(&self, idx: SqInteger, _: Option<u32>) -> Result<SqNull> {
-        match self.get_type(idx) {
-            SqType::Null => Ok(SqNull),
-            other => 
-                bail!("Failed to get null at idx {idx}: object type is {other:?}"),
-        }
+    fn get_constrain(&self, idx: SqInteger, _: Option<u32>) -> SqGetResult<SqNull> {
+        sq_validate!(self.get_type(idx), SqType::Null)
+            .map_err(|e| e.into_stack_error("failed to get null"))?;
+        Ok(SqNull)
     }
 }
 
@@ -1242,7 +1246,7 @@ where
             self.push(index as SqInteger);
             self.push(elem).into_result()?;
             self.slot_set(-3)
-                .map_err(|e| e.into_push_error("failed to set array slot"))?;
+                .map_err(|e| e.into_stack_error("failed to set array slot"))?;
         }
         Ok(())
     }
@@ -1252,7 +1256,7 @@ impl<VM, T> SqGet<Vec<T>> for VM
 where 
     VM: SqGet<T> + SqVm
 {
-    fn get_constrain(&self, idx: SqInteger, max_depth: Option<u32>) -> Result<Vec<T>> {
+    fn get_constrain(&self, idx: SqInteger, max_depth: Option<u32>) -> SqGetResult<Vec<T>> {
         if matches!(max_depth, Some(depth) if depth == 0) {
             return Ok(vec![]);
         }
@@ -1281,7 +1285,7 @@ where
             self.push(val).into_result()?;
 
             self.new_slot(-3, false)
-                .map_err(|e| e.into_push_error("failed to set table slot"))?;
+                .map_err(|e| e.into_stack_error("failed to set table slot"))?;
         }
         Ok(())
     }
@@ -1292,7 +1296,11 @@ where
     VM: SqGet<K> + SqGet<V> + SqVm,
     K: PartialEq + Eq + Hash,
 {
-    fn get_constrain(&self, idx: SqInteger, max_depth: Option<u32>) -> Result<IndexMap<K, V>> {
+    fn get_constrain(
+        &self,
+        idx: SqInteger, 
+        max_depth: Option<u32>
+    ) -> SqGetResult<IndexMap<K, V>> {
         if matches!(max_depth, Some(depth) if depth == 0) {
             return Ok(IndexMap::new());
         }
@@ -1304,7 +1312,7 @@ where
                 Ok((k, v)) => {
                     out.insert(k, v);
                 },
-                Err(e) => bail!(e),
+                Err(e) => return Err(e),
             } 
         }
 
@@ -1323,8 +1331,8 @@ impl<T: SqVm> SqPush<SqFloat> for T {
 
 impl<T: SqVm> SqGet<SqFloat> for T {
     #[inline]
-    fn get_constrain(&self, idx: SqInteger, _: Option<u32>) -> Result<SqFloat> {
-        self.get_float(idx)
+    fn get_constrain(&self, idx: SqInteger, _: Option<u32>) -> SqGetResult<SqFloat> {
+        self.get_float(idx).map_err(|e| e.into_stack_error("failed to get float"))
     }
 }
 
@@ -1339,8 +1347,8 @@ impl<T: SqVm> SqPush<bool> for T {
 
 impl<T: SqVm> SqGet<bool> for T {
     #[inline]
-    fn get_constrain(&self, idx: SqInteger, _: Option<u32>) -> Result<bool> {
-        self.get_bool(idx)
+    fn get_constrain(&self, idx: SqInteger, _: Option<u32>) -> SqGetResult<bool> {
+        self.get_bool(idx).map_err(|e| e.into_stack_error("failed to get integer"))
     }
 }
 
@@ -1359,11 +1367,14 @@ impl<T: SqVm> SqPush<SqUserData> for T {
 }
 
 impl<T: SqVm> SqGet<SqUserData> for T {
-    fn get_constrain(&self, idx: SqInteger, _: Option<u32>) -> Result<SqUserData> {
+    fn get_constrain(&self, idx: SqInteger, _: Option<u32>) -> SqGetResult<SqUserData> {
         match self.get_userdata(idx) {
+            // TODO: Add typetag to UserData struct
             Ok((user_data, _)) => {
                 let out = unsafe {
-                    let size = self.get_size(idx)? as usize;
+                    let size = self.get_size(idx)
+                        .map_err(|e| e.into_stack_error("failed to get size of userdata"))?
+                         as usize;
                     let mut out = Vec::with_capacity(size);
                     std::ptr::copy(user_data, out.as_ptr() as _, size);
                     out.set_len(size);
@@ -1371,7 +1382,7 @@ impl<T: SqVm> SqGet<SqUserData> for T {
                 };
                 Ok(out)
             }
-            Err(e) => Err(e) 
+            Err(e) => Err(e.into_stack_error("failed to get userdata")) 
         }
     }
 }
@@ -1381,6 +1392,7 @@ impl<VM, T> SqPush<Option<T>> for VM
 where 
     VM: SqPush<T> + SqVm,
 {
+    /// Fallible for fallible inner types, infallible otherwise
     type Output = <VM as SqPush<T>>::Output;
     
     fn push(&self, val: Option<T>) -> Self::Output {
@@ -1398,7 +1410,7 @@ impl<VM, T> SqGet<Option<T>> for VM
 where
     VM: SqGet<T> + SqVm
 {
-    fn get_constrain(&self, idx: SqInteger, max_depth: Option<u32>) -> Result<Option<T>> {
+    fn get_constrain(&self, idx: SqInteger, max_depth: Option<u32>) -> SqGetResult<Option<T>> {
         match self.get_type(idx) {
             SqType::Null => Ok(None),
             _ => Ok(Some(SqGet::<T>::get_constrain(self, idx, max_depth)?))
@@ -1417,23 +1429,26 @@ impl<VM> SqGet<SqInstance> for VM
 where 
     VM: SqVm + SqGet<SqTable> + SqPush<DynSqVar> + SqGet<DynSqVar>
 {
-    fn get_constrain(&self, idx: SqInteger, max_depth: Option<u32>) -> Result<SqInstance> {
+    fn get_constrain(&self, idx: SqInteger, max_depth: Option<u32>) -> SqGetResult<SqInstance> {
         if matches!(max_depth, Some(depth) if depth == 0) {
             return Ok(SqInstance { this: IndexMap::new() });
         }
 
         // Get instance class table with keys and default values
-        self.get_instance_class(idx)?;
+        self.get_instance_class(idx)
+            .map_err(|e| e.into_stack_error("failed to get instance class"))?;
         let proto: DynSqVar = self.get_constrain(-1, Some(1))?;
 
-        let DynSqVar::Class(mut proto) = proto else { bail!("max depth") };
+        let DynSqVar::Class(mut proto) = proto else { unreachable!("not a class") };
+        // Pop class
         self.pop(1);
 
         let next_depth = max_depth.map(|d| d - 1);
         for (key, val) in &mut proto {
             // Push class field/method key and get instance value
             self.push(key.clone()).into_result()?;
-            self.slot_get_raw(idx - idx.is_negative() as i32)?;
+            self.slot_get_raw(idx - idx.is_negative() as i32)
+                .map_err(|e| e.into_stack_error("failed to get slot of instance"))?;
 
             *val = self.get_constrain(-1, next_depth)?;
 
@@ -1445,7 +1460,6 @@ where
     }
 }
 
-// TODO: Get outer values 
 #[derive(Clone, Debug)]
 pub struct SqClosureInfo {
     name: Option<String>,
@@ -1457,16 +1471,17 @@ impl<VM> SqGet<SqClosureInfo> for VM
 where 
     VM: SqVm + SqGet<SqTable> + SqGet<DynSqVar>
 {
-    fn get_constrain(&self, idx: SqInteger, _: Option<u32>) -> Result<SqClosureInfo> {
+    fn get_constrain(&self, idx: SqInteger, _: Option<u32>) -> SqGetResult<SqClosureInfo> {
         let mut info = SqClosureInfo { name: None, args: vec![], src: None };
 
-        self.get_closure_info(idx)?;
+        self.get_closure_info(idx)
+            .map_err(|e| e.into_stack_error("failed to get closure info"))?;
 
         // Parameters are 1d array of strings
         for pair in self.iter_table(-1, Some(2)) {
             let (key, val): (String, DynSqVar) = match pair {
                 Ok(kv) => kv,
-                Err(e) => bail!(e),
+                Err(e) => return Err(e),
             };
             match key.as_str() {
                 "name" => if let DynSqVar::String(n) = val {
@@ -1502,16 +1517,17 @@ impl<VM> SqGet<SqNativeClosureInfo> for VM
 where 
     VM: SqVm + SqGet<SqTable> + SqGet<DynSqVar>
 {
-    fn get_constrain(&self, idx: SqInteger, _: Option<u32>) -> Result<SqNativeClosureInfo> {
+    fn get_constrain(&self, idx: SqInteger, _: Option<u32>) -> SqGetResult<SqNativeClosureInfo> {
         let mut info = SqNativeClosureInfo { name: None, arg_types: vec![] };
 
-        self.get_closure_info(idx)?;
+        self.get_closure_info(idx)
+            .map_err(|e| e.into_stack_error("failed to get native closure info"))?;
 
         // Argument types are 1d array of integers
         for pair in self.iter_table(-1, Some(2)) {
             let (key, val): (String, DynSqVar) = match pair {
                 Ok(kv) => kv,
-                Err(e) => bail!(e),
+                Err(e) => return Err(e),
             };
             match key.as_str() {
                 "name" => if let DynSqVar::String(n) = val {
@@ -1548,8 +1564,9 @@ where
 impl<VM, T> SqGet<SqUserPointer<T>> for VM 
 where VM: SqVm
 {
-    fn get_constrain(&self, idx: SqInteger, _: Option<u32>) -> Result<SqUserPointer<T>> {
+    fn get_constrain(&self, idx: SqInteger, _: Option<u32>) -> SqGetResult<SqUserPointer<T>> {
         self.get_userpointer(idx).map(|p| p as *mut T)
+            .map_err(|e| e.into_stack_error("failed to get userpointer"))
     }
 }
 
@@ -1809,7 +1826,7 @@ impl<VM> SqGet<DynSqVar> for VM
 where 
     VM: SqVm + SqGet<SqNull> + SqGet<SQInteger>
 {
-    fn get_constrain(&self, idx: SqInteger, max_depth: Option<u32>) -> Result<DynSqVar> {
+    fn get_constrain(&self, idx: SqInteger, max_depth: Option<u32>) -> SqGetResult<DynSqVar> {
         let sq_type = self.get_type(idx);
 
         // If container, do not expand
@@ -1844,7 +1861,7 @@ pub struct SqUnit;
 
 impl<VM> SqGet<SqUnit> for VM 
 where VM: VmRawApi {
-    fn get_constrain(&self, _: SqInteger, _: Option<u32>) -> Result<SqUnit> {
+    fn get_constrain(&self, _: SqInteger, _: Option<u32>) -> SqGetResult<SqUnit> {
         Ok(SqUnit)
     }
 }
@@ -1880,8 +1897,9 @@ where VM: SqVm {
     }
 
     /// Get a reference to object on the stack
-    pub fn get(vm: &'vm VM, idx: SqInteger) -> Result<Self> {
-        let mut obj = vm.get_stack_obj(idx)?;
+    pub fn get(vm: &'vm VM, idx: SqInteger) -> SqGetResult<Self> {
+        let mut obj = vm.get_stack_obj(idx)
+            .map_err(|e| e.into_stack_error("failed to get object handle"))?;
         vm.inc_ref(&mut obj);
         Ok(SqObjectRef {
             obj,

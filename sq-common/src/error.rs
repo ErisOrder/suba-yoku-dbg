@@ -3,13 +3,23 @@ use crate::rust_wrap::SqType;
 
 pub type SqVmResult<T> = std::result::Result<T, SqVmError>;
 
-/// Return [SqVmError::InvalidType] if type of object at is invalid 
+/// Return with [SqVmError::InvalidType] if type of object is invalid 
 #[macro_export]
 macro_rules! sq_expect {
+    ($($tt:tt)*) => {
+        if let Err(e) = $crate::sq_validate!($($tt)*) {
+            return Err(e);
+        }
+    }
+}
+
+/// Evaluates to [SqVmError::InvalidType] if type of object is invalid
+#[macro_export]
+macro_rules! sq_validate {
     ($check:expr, $($valid_type:path),+) => {
         match $check {
-            $(| $valid_type )+ => (),
-            other => return Err($crate::error::SqVmError::InvalidType {
+            $(| $valid_type )+ => Ok(()),
+            other => Err($crate::error::SqVmError::InvalidType {
                 expected: &[ $($valid_type, )+ ],
                 received: Some(other),
                 msg: Some("expected one of valid types")
@@ -19,17 +29,19 @@ macro_rules! sq_expect {
 }
 
 #[derive(Debug, Error)]
-pub enum SqPushErrorReason {
+pub enum SqStackErrorReason {
     #[error(transparent)]
     SqVmError(SqVmError),
+    #[error("reached max expansion depth")]
+    MaxDepthReached,
     #[error(transparent)]
     Other(anyhow::Error),
 }
 
 #[derive(Debug, Error)]
 #[error("{msg}: {reason}")]
-pub struct SqPushError {
-    reason: SqPushErrorReason,
+pub struct SqStackError {
+    reason: SqStackErrorReason,
     msg: &'static str    
 }
 
@@ -208,8 +220,9 @@ impl SqVmError {
         self
     }
 
-    pub fn into_push_error(self, msg: &'static str) -> SqPushError {
-        SqPushError { reason: SqPushErrorReason::SqVmError(self), msg }
+    /// Convert vm error into stack error with explanatory message
+    pub fn into_stack_error(self, msg: &'static str) -> SqStackError {
+        SqStackError { reason: SqStackErrorReason::SqVmError(self), msg }
     }
 }
 
