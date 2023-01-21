@@ -1,17 +1,7 @@
 use thiserror::Error;
-use crate::{rust_wrap::{SqType, SqInteger}, SqUnsignedInteger};
+use crate::rust_wrap::{SqType, SqInteger};
 
 pub type SqVmResult<T> = std::result::Result<T, SqVmError>;
-
-/// Return with [SqVmError::InvalidType] if type of object is invalid 
-#[macro_export]
-macro_rules! sq_expect {
-    ($($tt:tt)*) => {
-        if let Err(e) = $crate::sq_validate!($($tt)*) {
-            return Err(e);
-        }
-    }
-}
 
 /// Evaluates to [SqVmError::InvalidType] if type of object is invalid
 #[macro_export]
@@ -83,7 +73,8 @@ pub struct SqStackError {
 /// Strong-typed representation of SQVM errors
 #[derive(Debug, Error)]
 pub enum SqVmError {
-    #[error("invalid type: expected {expected:?}, received {received:?} ({})", .msg.unwrap_or(""))]
+    #[error("invalid type: expected {expected:?}, received {} ({})",
+         .received.map(|t| format!("{t:?}")).unwrap_or_default(), .msg.unwrap_or(""))]
     InvalidType {
         expected: &'static [SqType],
         received: Option<SqType>,

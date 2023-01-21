@@ -3,7 +3,7 @@ use util_proc_macro::{set_sqfn_paths, sq_closure};
 use std::{ptr::{addr_of_mut, addr_of}, cmp::Ordering, hash::Hash, fmt::Write, marker::PhantomData};
 use bitflags::bitflags;
 
-use crate::{raw_api::*, sq_expect, sq_validate};
+use crate::{raw_api::*, sq_validate};
 
 // use anyhow::Result;
 
@@ -553,15 +553,15 @@ pub trait SqVm: VmRawApi {
     /// Create a new native closure, pops `free_vars` values and set those
     /// as free variables of the new closure, and push the new closure in the stack
     #[inline]
-    unsafe fn new_closure(&self, f: SqFunction, free_vars: SqUnsignedInteger) {
-        self.newclosure(Some(f), free_vars)
+    fn new_closure(&self, f: SqFunction, free_vars: SqUnsignedInteger) {
+        unsafe { self.newclosure(Some(f), free_vars) }
     }
 
     /// Get the value of the integer at the `idx` position in the stack.
     #[inline]
     fn get_integer(&self, idx: SqInteger) -> SqVmResult<SqInteger> {
         let mut out = 0;
-        sq_try! { self, unsafe { self.getinteger(idx,  addr_of_mut!(out)) }}?;
+        sq_try! { self, nothrow unsafe { self.getinteger(idx,  addr_of_mut!(out)) }}?;
         Ok(out)
     }
 
@@ -569,7 +569,7 @@ pub trait SqVm: VmRawApi {
     #[inline]
     fn get_bool(&self, idx: SqInteger) -> SqVmResult<bool> {
         let mut out = 0;
-        sq_try! { self, unsafe { self.getbool(idx, addr_of_mut!(out)) }}?;
+        sq_try! { self, nothrow unsafe { self.getbool(idx, addr_of_mut!(out)) }}?;
         Ok(out != 0)
     }
 
@@ -577,7 +577,7 @@ pub trait SqVm: VmRawApi {
     #[inline]
     fn get_float(&self, idx: SqInteger) -> SqVmResult<SqFloat> {
         let mut out = 0.0;
-        sq_try! { self, unsafe { self.getfloat(idx, addr_of_mut!(out)) }}?;
+        sq_try! { self, nothrow unsafe { self.getfloat(idx, addr_of_mut!(out)) }}?;
         Ok(out)
     }
 
@@ -590,7 +590,7 @@ pub trait SqVm: VmRawApi {
     fn get_userdata(&self, idx: SqInteger) -> SqVmResult<(SQUserPointer, SQUserPointer)> {
         let mut ptr = std::ptr::null_mut();
         let mut typetag = std::ptr::null_mut();
-        sq_try! { self,
+        sq_try! { self, nothrow
             unsafe { self.getuserdata(idx, addr_of_mut!(ptr), addr_of_mut!(typetag)) }
         }?;
         Ok((ptr, typetag))
@@ -600,7 +600,7 @@ pub trait SqVm: VmRawApi {
     #[inline]
     fn get_userpointer(&self, idx: SqInteger) -> SqVmResult<SQUserPointer> {
         let mut ptr = std::ptr::null_mut();
-        sq_try! { self,
+        sq_try! { self, nothrow
             unsafe { self.getuserpointer(idx, addr_of_mut!(ptr)) }
         }?;
         Ok(ptr)
@@ -618,7 +618,7 @@ pub trait SqVm: VmRawApi {
     /// Sets a `hook` that will be called before release of __userdata__ at position `idx`
     #[inline]
     fn set_release_hook(&self, idx: SqInteger, hook: SqReleaseHook) -> SqVmResult<()> {
-        sq_expect!(self.get_type(idx), SqType::UserData);
+        sq_validate!(self.get_type(idx), SqType::UserData)?;
         unsafe { self.setreleasehook(idx, Some(hook)) };
         Ok(())
     }
@@ -1157,10 +1157,7 @@ where VM: SqPush<SqUserData> + SqVm
 
         self.push(SqUserData::from(data));
         self.set_release_hook(-1, release_hook).expect("Failed to set box release hook");
-
-        unsafe {
-            self.new_closure(glue, 1);
-        }
+        self.new_closure(glue, 1);
     }
 }
 
@@ -1169,7 +1166,7 @@ impl<T: SqVm> SqPush<SqFunction> for T {
     
     #[inline]
     fn push(&self, val: SqFunction) {
-        unsafe { self.new_closure(val, 0) }
+        self.new_closure(val, 0)
     }
 }
 
@@ -1185,7 +1182,9 @@ impl<T: SqVm> SqPush<SqInteger> for T {
 impl<T: SqVm> SqGet<SqInteger> for T {
     #[inline]
     fn get_constrain(&self, idx: SqInteger, _: Option<u32>) -> SqGetResult<SqInteger> {
-        self.get_integer(idx).map_err(|e| e.into_stack_error("failed to get integer"))
+        sq_validate!(self.get_type(idx), SqType::Integer)
+            .map_err(|e| e.into_stack_error("failed to get integer"))?;
+        Ok(self.get_integer(idx).unwrap())
     }
 }
 
@@ -1210,9 +1209,10 @@ impl<T: SqVm> SqPush<&str> for T {
 // TODO: Use get_size() to make this more safe
 impl<T: SqVm> SqGet<String> for T {
     fn get_constrain(&self, idx: SqInteger, _: Option<u32>) -> SqGetResult<String> {
+        sq_validate!(self.get_type(idx), SqType::String)
+            .map_err(|e| e.into_stack_error("failed to get string"))?;
         unsafe {
-            let ptr = self.get_string(idx)
-                .map_err(|e| e.into_stack_error("failed to get string"))?;
+            let ptr = self.get_string(idx).unwrap();  
             Ok(cstr_to_string(ptr as _))
         }
     }
@@ -1262,6 +1262,9 @@ where
     VM: SqGet<T> + SqVm
 {
     fn get_constrain(&self, idx: SqInteger, max_depth: Option<u32>) -> SqGetResult<Vec<T>> {
+        sq_validate!(self.get_type(idx), SqType::Array)
+            .map_err(|e| e.into_stack_error("failed to get array"))?;
+        
         if matches!(max_depth, Some(depth) if depth == 0) {
             return Ok(vec![]);
         }
@@ -1306,6 +1309,9 @@ where
         idx: SqInteger, 
         max_depth: Option<u32>
     ) -> SqGetResult<IndexMap<K, V>> {
+        sq_validate!(self.get_type(idx), SqType::Table)
+            .map_err(|e| e.into_stack_error("failed to get table"))?;
+        
         if matches!(max_depth, Some(depth) if depth == 0) {
             return Ok(IndexMap::new());
         }
@@ -1337,7 +1343,9 @@ impl<T: SqVm> SqPush<SqFloat> for T {
 impl<T: SqVm> SqGet<SqFloat> for T {
     #[inline]
     fn get_constrain(&self, idx: SqInteger, _: Option<u32>) -> SqGetResult<SqFloat> {
-        self.get_float(idx).map_err(|e| e.into_stack_error("failed to get float"))
+        sq_validate!(self.get_type(idx), SqType::Float)
+            .map_err(|e| e.into_stack_error("failed to get float"))?;
+        Ok(self.get_float(idx).unwrap())
     }
 }
 
@@ -1353,7 +1361,9 @@ impl<T: SqVm> SqPush<bool> for T {
 impl<T: SqVm> SqGet<bool> for T {
     #[inline]
     fn get_constrain(&self, idx: SqInteger, _: Option<u32>) -> SqGetResult<bool> {
-        self.get_bool(idx).map_err(|e| e.into_stack_error("failed to get bool"))
+        sq_validate!(self.get_type(idx), SqType::Bool)
+            .map_err(|e| e.into_stack_error("failed to get bool"))?;
+        Ok(self.get_bool(idx).unwrap())
     }
 }
 
@@ -1373,22 +1383,21 @@ impl<T: SqVm> SqPush<SqUserData> for T {
 
 impl<T: SqVm> SqGet<SqUserData> for T {
     fn get_constrain(&self, idx: SqInteger, _: Option<u32>) -> SqGetResult<SqUserData> {
-        match self.get_userdata(idx) {
-            // TODO: Add typetag to UserData struct
-            Ok((user_data, _)) => {
-                let out = unsafe {
-                    let size = self.get_size(idx)
-                        .map_err(|e| e.into_stack_error("failed to get size of userdata"))?
-                         as usize;
-                    let mut out = Vec::with_capacity(size);
-                    std::ptr::copy(user_data, out.as_ptr() as _, size);
-                    out.set_len(size);
-                    SqUserData(out)
-                };
-                Ok(out)
-            }
-            Err(e) => Err(e.into_stack_error("failed to get userdata")) 
-        }
+        sq_validate!(self.get_type(idx), SqType::UserData)
+            .map_err(|e| e.into_stack_error("failed to get userdata"))?;
+        
+        // TODO: Add typetag to UserData struct
+        let (user_data, _) = self.get_userdata(idx).unwrap(); 
+        let out = unsafe {
+            let size = self.get_size(idx)
+                .map_err(|e| e.into_stack_error("failed to get size of userdata"))?
+                 as usize;
+            let mut out = Vec::with_capacity(size);
+            std::ptr::copy(user_data, out.as_ptr() as _, size);
+            out.set_len(size);
+            SqUserData(out)
+        };
+        Ok(out)
     }
 }
 
@@ -1435,6 +1444,9 @@ where
     VM: SqVm + SqGet<SqTable> + SqPush<DynSqVar> + SqGet<DynSqVar>
 {
     fn get_constrain(&self, idx: SqInteger, max_depth: Option<u32>) -> SqGetResult<SqInstance> {
+        sq_validate!(self.get_type(idx), SqType::Instance)
+            .map_err(|e| e.into_stack_error("failed to get instance"))?;
+        
         if matches!(max_depth, Some(depth) if depth == 0) {
             return Ok(SqInstance { this: IndexMap::new() });
         }
@@ -1570,8 +1582,10 @@ impl<VM, T> SqGet<SqUserPointer<T>> for VM
 where VM: SqVm
 {
     fn get_constrain(&self, idx: SqInteger, _: Option<u32>) -> SqGetResult<SqUserPointer<T>> {
-        self.get_userpointer(idx).map(|p| p as *mut T)
-            .map_err(|e| e.into_stack_error("failed to get userpointer"))
+        sq_validate!(self.get_type(idx), SqType::UserPointer)
+            .map_err(|e| e.into_stack_error("failed to get userpointer"))?;
+        
+        Ok(self.get_userpointer(idx).map(|p| p as *mut T).unwrap())
     }
 }
 
