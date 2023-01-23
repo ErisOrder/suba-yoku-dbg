@@ -349,7 +349,7 @@ pub trait SqVm: VmRawApi {
     }
 
     /// Get last VM error as reference, without copy
-    /// # Unsafety
+    /// # Safety
     /// This function returns reference to string which lifetime 
     /// controlled by SQVM. It may be freed when popped from VM stack.
     /// # Panics
@@ -1109,7 +1109,7 @@ impl<T:SqVm> SqThrow<SqStackError> for T {
 
 impl<T: SqVm> SqThrow<anyhow::Error> for T {
     fn throw(&self, throwable: anyhow::Error) {
-        let msg = throwable.chain().into_iter()
+        let msg = throwable.chain()
             .fold(String::new(), |mut msg, e| {
                 msg += "\nerror: ";
                 msg += &e.to_string();
@@ -1823,7 +1823,8 @@ where
     
 {
     type Output = SqPushResult;
-    
+
+    #[allow(clippy::unit_arg)]    
     fn push(&self, val: DynSqVar) -> Self::Output {
         match val {
             DynSqVar::Null => self.push(SqNull).into_result(),
@@ -1926,6 +1927,17 @@ where VM: SqVm {
         })
     }
 }
+
+// TODO: Implementing SqGet for SqObjectRef is possible, but requires
+// changing `&self` in SqGet methods to `self` and implementing this trait not for VM,
+// but for &VM due to lifetime elision that assumes 
+//
+// get(&'1 self, ..) -> SqObjectRef<'2, ..>
+//       ^                           ^
+//
+// while what we really need is 
+// get(&'1 self, ..) -> SqObjectRef<'1, ..>
+//       ^                           ^ 
 
 impl<VM> SqPush<SqObjectRef<'_, VM>> for VM
 where VM: SqVm {

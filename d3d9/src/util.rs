@@ -1,11 +1,11 @@
 use sq_common::{*, dbg::{SqLocalVarWithLvl, SqBreakpoint}};
 use std::{
-    sync::atomic,
+    sync::{atomic, Mutex, Arc},
     fs::{File, read_dir}, cell::RefCell, rc::Rc,
-    io::Read, path::Path, ops::Range,
+    io::Read, path::Path, ops::Range, time::Duration,
 };
 use clap::{Subcommand, Command, FromArgMatches};
-use anyhow::{Result};
+use anyhow::Result;
 use serde::{Serialize, Deserialize};
 use crate::hooks;
 
@@ -471,8 +471,9 @@ impl DebuggerFrontend {
             },
         };
 
+        let mut lines = script.lines();
         // Parse list of captured local vars
-        let (script, capture) = if let Some(mut line) = script.lines().next() { 'block: {
+        let (script, capture) = if let Some(mut line) = lines.next() { 'block: {
             line = line.trim();
             if !line.starts_with('|') || !line.ends_with('|') {
                 // Return cloned script and no captured locals
@@ -500,7 +501,7 @@ impl DebuggerFrontend {
             }
 
             // Return script without first line and vector with captured vars
-            (script.lines().skip(1).collect(), out)
+            (lines.collect(), out)
         }} else {
             println!("buffer is empty");
             return;
@@ -601,21 +602,9 @@ impl DebuggerFrontend {
         let state: SavedState = serde_json::from_reader(f)?;
         Ok(state)
     }
-}
-
-/// Public methods
-impl DebuggerFrontend {
-    pub fn new() -> Self {
-        Self { 
-            last_cmd: Commands::default(),
-            buffers: ScriptBuffers::new(),
-            during_eval: false,
-            srcs: SourceDB::new(),
-        }
-    }
 
     /// Send last parsed args to debugger
-    pub fn do_actions(&mut self, dbg: &mut dbg::SqDebugger) {
+    fn do_actions(&mut self, dbg: &mut dbg::SqDebugger) {
         match &self.last_cmd {
             Commands::Step => if let Err(e) = dbg.step() {
                 println!("step failed: {e}");
@@ -682,7 +671,7 @@ impl DebuggerFrontend {
     }
 
     /// Save arguments to internal buffer, if successful
-    pub fn parse_args(&mut self, args: &str) -> Result<()> {
+    fn parse_args(&mut self, args: &str) -> Result<()> {
         match Self::cli().try_get_matches_from(args.trim().split(' ')) {
             Ok(m) => {
                 self.last_cmd = Commands::from_arg_matches(&m)?;
@@ -690,6 +679,72 @@ impl DebuggerFrontend {
             },
             Err(e) => Err(e.into()),
         }
+    }
+}
+
+/// Public methods
+impl DebuggerFrontend {
+    /// Connect new frontend to debugger middleware
+    pub fn connect(middleware: dbg::SqDebugger) -> ! {
+        let recv = middleware.event_rx().clone();
+        let shared_dbg = Arc::new(Mutex::new(middleware));
+        let shared_dbg_ctrlc = shared_dbg.clone();
+        
+        // Set ctrl+c handler to stop execution        
+        ctrlc::set_handler(move || {
+            let dbg = shared_dbg_ctrlc.lock().unwrap();
+
+            if dbg.exec_state() == dbg::ExecState::Running {            
+                println!("Execution halted");
+                dbg.halt();
+            }
+        }).expect("failed to set ctrl+c handler");
+
+        
+        // Debugger frontend thread
+        std::thread::spawn(move || {
+            let mut front = Self { 
+                last_cmd: Commands::default(),
+                buffers: ScriptBuffers::new(),
+                during_eval: false,
+                srcs: SourceDB::new(),
+            };
+            
+            let mut arg_str = String::new();
+        
+            println!("Debugger attached, type `help` to get available commands list");
+
+            loop {
+                std::thread::sleep(Duration::from_millis(20));
+            
+                let mut dbg = shared_dbg.lock().unwrap();
+            
+                if let dbg::ExecState::Halted = dbg.exec_state() {
+                    std::io::stdin().read_line(&mut arg_str).expect("failed to read cmd line");
+                    
+                    if !arg_str.trim().is_empty() {
+                        match front.parse_args(&arg_str) {
+                            Ok(_) => front.do_actions(&mut dbg),
+                            Err(e) => println!("{e}"),
+                        };
+                    } else { 
+                        front.do_actions(&mut dbg);
+                    }
+                
+                    arg_str.clear();
+                }
+            }
+        });
+
+        // Print received events
+        loop {
+            if let Ok((e, bp)) = recv.recv() { 
+                if let Some(bp) = bp {
+                    println!("Reached debugger breakpoint {}", bp.number);
+                }
+                println!("{e}");
+            }
+        }   
     }
 }
 
@@ -889,7 +944,7 @@ impl SourceDB {
     pub fn add_dir(&mut self, path: String, prefix: Option<String>) -> Result<()> {
         let mut dir = SqSrcDir { path, prefix, files: vec![] };
 
-        read_dir(dir.path.clone())?.into_iter().try_for_each(
+        read_dir(dir.path.clone())?.try_for_each(
         |e| -> Result<()> {
             let entry = e?;
             let name = entry.file_name().to_string_lossy().to_string();
@@ -911,9 +966,9 @@ impl SourceDB {
 
     /// Get all files' with their prefixes iterator
     pub fn iter_files(&self) -> FileIter<impl Iterator<Item = FileWithPrefixRef<'_>>> {
-        FileIter(self.0.iter().map(
-            |d| [&d.prefix].into_iter().cycle().zip(d.files.iter())
-        ).flatten())
+        FileIter(self.0.iter().flat_map(
+            |d| [&d.prefix].into_iter().cycle().zip(d.files.iter()))
+        )
     }
 }
 

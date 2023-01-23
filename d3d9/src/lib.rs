@@ -2,7 +2,6 @@
 
 use std::time::Duration;
 
-use sq_common::dbg;
 use log::debug;
 use winapi::shared::minwindef::{BOOL, DWORD, HINSTANCE, LPVOID, TRUE};
 
@@ -70,16 +69,6 @@ fn dll_init() {
 
     wrappers::alloc_console();
 
-    ctrlc::set_handler(move || {
-        let Some(ref dbg) = *hooks::SQ_DEBUGGER.lock().unwrap()
-        else { return };
-
-        if dbg.exec_state() == dbg::ExecState::Running {            
-            println!("Execution halted");
-            dbg.halt();
-        }
-    }).expect("failed to set ctrl+c handler");
-
     std::env::set_var("RUST_LOG", "debug");
     pretty_env_logger::init();
 
@@ -97,58 +86,17 @@ fn dll_init() {
         debug!("vm init hook installed");
     }
 
-    // Event Receiver thread
+    // Debugger frontend thread
     std::thread::spawn(|| { 
         // Wait until debugger attached
-        let recv = loop {
-            if let Some(ref mut dbg) = *hooks::SQ_DEBUGGER.lock().unwrap() {
-                break dbg.event_rx().clone();
+        let dbg_middleware = loop {
+            if let ref mut opt @ Some(_) = *hooks::SQ_DEBUGGER.lock().unwrap() {
+                break opt.take().unwrap()
             }
             std::thread::sleep(Duration::from_millis(50));
         };
 
-        
-        // Debugger frontend thread
-        // It`s spawned here, because event listener needs to be acquired first
-        // due to frontend thread locking debugger mutex 
-        std::thread::spawn(|| {
-            let mut front = util::DebuggerFrontend::new();
-            let mut arg_str =  String::new();
-        
-            println!("Debugger attached, type `help` to get available commands list");
-
-            loop {
-                std::thread::sleep(Duration::from_millis(20));
-            
-                let Some(ref mut dbg) = *hooks::SQ_DEBUGGER.lock().unwrap()
-                else { unreachable!() };
-            
-                if let dbg::ExecState::Halted = dbg.exec_state() {
-                    std::io::stdin().read_line(&mut arg_str).expect("failed to read cmd line");
-                    
-                    if !arg_str.trim().is_empty() {
-                        match front.parse_args(&arg_str) {
-                            Ok(_) => front.do_actions(dbg),
-                            Err(e) => println!("{e}"),
-                        };
-                    } else { 
-                        front.do_actions(dbg);
-                    }
-                
-                    arg_str.clear();
-                }
-            }
-        });
-
-        // Print received events
-        loop {
-            if let Ok((e, bp)) = recv.recv() { 
-                if let Some(bp) = bp {
-                    println!("Reached debugger breakpoint {}", bp.number);
-                }
-                println!("{e}");
-            }
-        }   
+        util::DebuggerFrontend::connect(dbg_middleware)        
     });
 }
 
