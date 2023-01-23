@@ -1,9 +1,8 @@
 use std::{time::Duration, sync::{Arc, Mutex, MutexGuard}};
-use anyhow::{Result, bail, anyhow};
 use atomic::{Atomic, Ordering};
 use crossbeam::channel::{bounded, unbounded, Receiver, Sender};
 use serde::{Serialize, Deserialize};
-use crate::{rust_wrap::*, error::{SqCompilerError, SqCompilerResult}};
+use crate::{rust_wrap::*, error::{SqDebugResult, SqDebugError}};
 use crate::raw_api::VmRawApi;
 
 const RECV_TIMEOUT: Duration = Duration::from_secs(10);
@@ -69,7 +68,18 @@ pub type SqBacktrace = Vec<SqStackInfo>;
 pub enum DebugResp {
     Backtrace(SqBacktrace),
     Locals(Option<Vec<SqLocalVarWithLvl>>),
-    EvalResult(Result<DynSqVar, SqCompilerError>),
+    EvalResult(SqDebugResult<DynSqVar>),
+}
+
+impl DebugResp {
+    /// Get name of variant for error reporting
+    pub fn variant_name(&self) -> &'static str {
+        match self {
+            DebugResp::Backtrace(_) => "Backtrace",
+            DebugResp::Locals(_) => "Locals",
+            DebugResp::EvalResult(_) => "EvalResult",
+        }
+    }
 }
 
 /// Struct for holding breakpoint data. At least 1 condition field must be specified for it to work 
@@ -244,6 +254,12 @@ impl SqDebugger
         let mut debugging = true;
         let mut tracing = false;
 
+        // TODO: Somehow track threads this function being called from.
+        // Currently it`s possible, that after step closure will be called from another thread,
+        // as this hook is shared between all friend VMs.
+        // Possible solution is to halt execution after step 
+        // only in thread, where this step was made.
+        
         // Attached debugger will receive messages and respond to them
         dbg.vm.set_debug_hook(move |e, vm| {
             
@@ -331,9 +347,6 @@ impl SqDebugger
                         resp_tx.send(DebugResp::Locals(if v.is_empty() { None } else { Some(v) })).unwrap();
                     },
                     DebugMsg::Eval(SqScriptDesc { capture, script, depth, debug }) => 'eval: {
-
-                        println!("{capture:?}");
-
                         let mut env = IndexMap::with_capacity(capture.len());
 
                         // Gather capture variables
@@ -356,9 +369,8 @@ impl SqDebugger
                                     },
                                     Ok(None) => {
                                         resp_tx.send(DebugResp::EvalResult(
-                                            Err( 
-                                                anyhow!("local {l_name} not found at level {lvl}").into(),
-                                            ))).unwrap();
+                                            Err(SqDebugError::LocalNotFound { name: l_name, lvl })
+                                        )).unwrap();
                                         break 'eval;
                                     }
                                     Err(e) => {
@@ -376,7 +388,7 @@ impl SqDebugger
                             debugging = debug;
                         }
 
-                        let res: Result<DynSqVar, SqCompilerError> = try {
+                        let res: SqDebugResult<DynSqVar> = try {
                             vm.compile_closure(script, "eval.nut".into())?;
 
                             vm.push(env)?;
@@ -411,9 +423,8 @@ impl SqDebugger
     }
 
     /// Continue execution, but send every debug event
-    pub fn start_tracing(&self) -> Result<()> {
-        self.sender.send(DebugMsg::Trace)?;
-        Ok(())
+    pub fn start_tracing(&self) {
+        self.sender.send(DebugMsg::Trace).unwrap();
     }
 
     /// Resume execution
@@ -442,9 +453,8 @@ impl SqDebugger
     }
 
     /// Unlock current debug hook call
-    pub fn step(&self) -> Result<()> {
-        self.sender.send(DebugMsg::Step)?;
-        Ok(())
+    pub fn step(&self) {
+        self.sender.send(DebugMsg::Step).unwrap();
     }
 
     /// Get local variables and their values at specified level.
@@ -459,18 +469,23 @@ impl SqDebugger
     ///   - 1 - expand this container.
     ///   - 2 - expand this container and all children
     ///   - 3.. - and so on
-    pub fn get_locals(&self, lvl: Option<SqUnsignedInteger>, depth: SqUnsignedInteger) -> Result<Vec<SqLocalVarWithLvl>> {
-        self.sender.send(DebugMsg::Locals(lvl, depth))?;
+    pub fn get_locals(
+        &self,
+        lvl: Option<SqUnsignedInteger>,
+        depth: SqUnsignedInteger
+    ) -> SqDebugResult<Vec<SqLocalVarWithLvl>> {
+        self.sender.send(DebugMsg::Locals(lvl, depth)).unwrap();
+        
         match self.receiver.recv_timeout(RECV_TIMEOUT) {
-            Ok(DebugResp::Locals(loc)) => 
-                if let Some(loc) = loc {
-                    Ok(loc)
-                } else { match lvl {
-                    Some(lvl) => bail!("no locals at level {lvl}"),
-                    None => bail!("no locals at all levels"),
-                }},
-            Ok(r) => bail!("{r:?}: expected locals"),
-            Err(e) => bail!(e)
+            Ok(DebugResp::Locals(Some(loc))) => Ok(loc),
+            Ok(DebugResp::Locals(None)) => Err(SqDebugError::NoLocals { 
+                all_levels: lvl.is_none()
+            }),
+            Ok(r) => Err(SqDebugError::InvalidMessage { 
+                expected: "Locals",
+                received: r.variant_name() 
+            }),
+            Err(_) => Err(SqDebugError::Timeout)
         }
     }
     
@@ -485,15 +500,18 @@ impl SqDebugger
         script: String,
         capture_locals: Vec<SqCaptureLocal>,
         depth: SqUnsignedInteger
-    ) -> SqCompilerResult<DynSqVar> {
+    ) -> SqDebugResult<DynSqVar> {
         self.sender.send(DebugMsg::Eval(SqScriptDesc {
             capture: capture_locals, script, depth, debug: false
-        })).map_err(|e| anyhow!(e))?;
+        })).unwrap();
 
         match self.receiver.recv_timeout(RECV_TIMEOUT) {
             Ok(DebugResp::EvalResult(res)) => res,
-            Ok(r) => Err(anyhow!("{r:?}: expected eval result").into()),
-            Err(e) => Err(anyhow!(e).into())
+            Ok(r) => Err(SqDebugError::InvalidMessage { 
+                expected: "EvalResult",
+                received: r.variant_name()
+            }),
+            Err(_) => Err(SqDebugError::Timeout)
         }
     }
 
@@ -510,18 +528,20 @@ impl SqDebugger
         script: String,
         capture_locals: Vec<SqCaptureLocal>,
         depth: SqUnsignedInteger
-    ) -> Result<impl Fn() -> SqCompilerResult<DynSqVar>> {
+    ) -> impl Fn() -> SqDebugResult<DynSqVar> {
         self.sender.send(DebugMsg::Eval(SqScriptDesc {
             capture: capture_locals, script, depth, debug: true
-        }))?;
-
+        })).unwrap();
+       
         let receiver = self.receiver.clone();
 
-        Ok(move || match receiver.recv() {
-            Ok(DebugResp::EvalResult(res)) => res,
-            Ok(r) => Err(anyhow!("{r:?}: expected eval result").into()),
-            Err(e) => Err(anyhow!(e).into())
-        })
+        move || match receiver.recv().unwrap() {
+            DebugResp::EvalResult(res) => res,
+            r => Err(SqDebugError::InvalidMessage { 
+                expected: "EvalResult",
+                received: r.variant_name()
+            }),
+        }
     }
 
     /// Request backtrace from vm thread, where
@@ -530,12 +550,16 @@ impl SqDebugger
     /// ^^^^^^^^^     ^^^^
     /// current_fn -> root
     /// ```
-    pub fn get_backtrace(&self) -> Result<SqBacktrace> {
-        self.sender.send(DebugMsg::Backtrace)?;
+    pub fn get_backtrace(&self) -> SqDebugResult<SqBacktrace> {
+        self.sender.send(DebugMsg::Backtrace).unwrap();
+        
         match self.receiver.recv_timeout(RECV_TIMEOUT) {
             Ok(DebugResp::Backtrace(bt)) => Ok(bt),
-            Ok(r) => bail!("{r:?}: expected backtrace"),
-            Err(e) => bail!(e)
+            Ok(r) => Err(SqDebugError::InvalidMessage {
+                expected: "Backtrace",
+                received: r.variant_name(), 
+            }),
+            Err(_) => Err(SqDebugError::Timeout)
         }
     }
 

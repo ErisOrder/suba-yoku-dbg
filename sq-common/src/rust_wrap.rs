@@ -5,8 +5,6 @@ use bitflags::bitflags;
 
 use crate::{raw_api::*, sq_validate};
 
-// use anyhow::Result;
-
 use crate::error::*;
 
 set_sqfn_paths!(sq_wrap_path = "self");
@@ -1309,7 +1307,7 @@ where
         idx: SqInteger, 
         max_depth: Option<u32>
     ) -> SqGetResult<IndexMap<K, V>> {
-        sq_validate!(self.get_type(idx), SqType::Table)
+        sq_validate!(self.get_type(idx), SqType::Table, SqType::Class)
             .map_err(|e| e.into_stack_error("failed to get table"))?;
         
         if matches!(max_depth, Some(depth) if depth == 0) {

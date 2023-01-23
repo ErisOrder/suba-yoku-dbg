@@ -1,9 +1,10 @@
 use thiserror::Error;
-use crate::rust_wrap::{SqType, SqInteger};
+use crate::{rust_wrap::{SqType, SqInteger}, SqUnsignedInteger};
 
 pub type SqVmResult<T> = std::result::Result<T, SqVmError>;
 
-/// Evaluates to [SqVmError::InvalidType] if type of object is invalid
+/// Evaluates to `Err` with [SqVmError::InvalidType] 
+/// if type of object is invalid, `Ok(())` otherwise
 #[macro_export]
 macro_rules! sq_validate {
     ($check:expr, $($valid_type:path),+) => {
@@ -49,8 +50,6 @@ pub enum SqCompilerError {
     },
     #[error("stack error: {0}")]
     StackError(#[from] SqStackError),
-    #[error(transparent)]
-    Other(#[from] anyhow::Error)
 }
 
 #[derive(Debug, Error)]
@@ -68,6 +67,32 @@ pub enum SqStackErrorReason {
 pub struct SqStackError {
     reason: SqStackErrorReason,
     msg: &'static str    
+}
+
+pub type SqDebugResult<T> = Result<T, SqDebugError>;
+
+#[derive(Debug, Error)]
+pub enum SqDebugError {
+    #[error("invalid message: expected {expected}, received {received}")]
+    InvalidMessage {
+        expected: &'static str,
+        received: &'static str,
+    },
+    #[error("timeout reached")]
+    Timeout,
+    #[error("no locals at {}", if *.all_levels { "all levels"} else { "this level" })]
+    NoLocals {
+        all_levels: bool
+    },
+    #[error("local {name} not found on level {lvl}")]
+    LocalNotFound {
+        name: String,
+        lvl: SqUnsignedInteger
+    },
+    #[error(transparent)]
+    StackError(#[from] SqStackError),
+    #[error(transparent)]
+    EvalError(#[from] SqCompilerError), 
 }
 
 /// Strong-typed representation of SQVM errors

@@ -249,7 +249,7 @@ enum Commands {
 }
 
 #[derive(Clone, Serialize, Deserialize)]
- struct SavedState {
+struct SavedState {
     buffers: ScriptBuffers,
     breakpoints: dbg::BreakpointStore,
 }
@@ -517,11 +517,12 @@ impl DebuggerFrontend {
         if !debug {
             eval_res(dbg.execute(script, capture, depth))
         }
-        else { match dbg.execute_debug(script, capture, depth) {
+        else { 
+            let fut = dbg.execute_debug(script, capture, depth);
+            
             // Spawn thread that will wait for eval result
-            Ok(fut) => { std::thread::spawn(move || eval_res(fut())); },
-            Err(e) => println!("failed to evaluate: {e}"),
-        }}
+            std::thread::spawn(move || eval_res(fut()));
+        }
 
 
         self.during_eval = false;
@@ -606,10 +607,7 @@ impl DebuggerFrontend {
     /// Send last parsed args to debugger
     fn do_actions(&mut self, dbg: &mut dbg::SqDebugger) {
         match &self.last_cmd {
-            Commands::Step => if let Err(e) = dbg.step() {
-                println!("step failed: {e}");
-            }
-
+            Commands::Step => dbg.step(),
             Commands::Continue => dbg.resume(),
 
             Commands::Backtrace => match dbg.get_backtrace() {
@@ -636,11 +634,7 @@ impl DebuggerFrontend {
                 => self.eval_script(dbg, *debug, *buffer, *depth),
 
             Commands::Buffer(cmd) => self.manipulate_buffer(*cmd),
-
-            Commands::Trace => if let Err(e) = dbg.start_tracing() {
-                println!("trace failed: {e}")
-            }
-
+            Commands::Trace => dbg.start_tracing(),
             Commands::Src(cmd) => self.manipulate_sources(cmd.clone()),
 
             Commands::Load { file } => 
@@ -662,7 +656,6 @@ impl DebuggerFrontend {
                     println!("Failed to save state: {e}")
                 }
             }
-
 
             Commands::Set(var) => Self::set_var(var),
             Commands::Nop => (),
