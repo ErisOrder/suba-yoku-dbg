@@ -92,7 +92,7 @@ pub enum SqDebugError {
     #[error(transparent)]
     StackError(#[from] SqStackError),
     #[error(transparent)]
-    EvalError(#[from] SqCompilerError), 
+    CompileError(#[from] SqCompilerError), 
 }
 
 /// Strong-typed representation of SQVM errors

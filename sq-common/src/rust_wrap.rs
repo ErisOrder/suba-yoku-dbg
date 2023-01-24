@@ -630,7 +630,7 @@ pub trait SqVm: VmRawApi {
     /// If the execution of the function is suspended through sq_suspendvm(),
     /// the closure and the arguments will not be automatically popped from the stack.
     #[inline]
-    fn call_closure(&self, params: SqInteger, retval: bool, raise_error: bool) -> SqVmResult<()> {
+    fn call_closure_api(&self, params: SqInteger, retval: bool, raise_error: bool) -> SqVmResult<()> {
         sq_try! { self,
             unsafe { self.call(params, retval as _, raise_error as _) }
         }?;
@@ -982,7 +982,8 @@ pub trait SqVmAdvanced<'a>:
                 UnsafeVm::from_handle(vm).push(ptr);
             }
         }
-        
+
+        self.enable_debug_info(true);    
         self.set_compiler_error_handler(Some(error_handler));
         let compile_res = self.compile_string(script, src_file, true);
         self.set_compiler_error_handler(None);
@@ -1008,7 +1009,7 @@ pub trait SqVmAdvanced<'a>:
     ///
     /// Returns [SqNull] if closure does not return anything.
     fn closure_call(&self, argc: SqInteger, depth: Option<SqUnsignedInteger>) -> SqGetResult<DynSqVar> {
-        self.call_closure(argc, true, false)
+        self.call_closure_api(argc, true, false)
             .map_err(|e| e.into_stack_error("failed to call closure"))?;
         let ret = self.get_constrain(-1, depth)?;
 
@@ -1204,6 +1205,7 @@ impl<T: SqVm> SqPush<&str> for T {
     }
 }
 
+// TODO: Check encoding
 // TODO: Use get_size() to make this more safe
 impl<T: SqVm> SqGet<String> for T {
     fn get_constrain(&self, idx: SqInteger, _: Option<u32>) -> SqGetResult<String> {
@@ -1634,7 +1636,7 @@ impl DynSqVar {
             Self::UserData(_) => SqType::UserData,
             Self::UserPointer(_) => SqType::UserPointer,
             Self::Closure(_) => SqType::Closure,
-            Self::NativeClosure(_) => SqType::Closure,
+            Self::NativeClosure(_) => SqType::NativeClosure,
             Self::NotExpanded(t) => *t,
         }
     }
@@ -1874,7 +1876,10 @@ where
     }
 }
 
-/// Type that is similar to rust's `()` and can be used for same purposes
+/// Type that is similar to rust's `()` and can be used for same purposes.
+///
+/// If function or closure with `#[sqfn]` attribute returns `SqUnit`, it will indicate to vm,
+/// that return value is on stack top, allowing to push it manually. 
 pub struct SqUnit;
 
 impl<VM> SqGet<SqUnit> for VM 
