@@ -741,20 +741,15 @@ impl DebuggerFrontend {
     }
 }
 
-/// Listing container contents
-trait ListItems {
-    /// Print list of contained items
-    fn list_items(&self);
-}
 
-/// Listing iterator elements
+/// Listing iterator or container elements
 trait IntoListItems {
     /// Print list of iterated elements
     fn list_items(self);
 }
 
-impl ListItems for dbg::BreakpointStore {
-    fn list_items(&self) {
+impl IntoListItems for &dbg::BreakpointStore {
+    fn list_items(self) {
         const BP_NUMBER_FIELD: usize = 8;
         const BP_ENABLED_FIELD: usize = 10;
 
@@ -782,7 +777,7 @@ impl ListItems for dbg::BreakpointStore {
     }
 }
 
-impl ListItems for Vec<SqLocalVarWithLvl> {
+impl IntoListItems for &Vec<SqLocalVarWithLvl> {
     /// Print locals in form
     /// ```rs
     /// Level X locals:
@@ -791,7 +786,7 @@ impl ListItems for Vec<SqLocalVarWithLvl> {
     /// Level Y locals:
     /// ...
     /// ```
-    fn list_items(&self) {
+    fn list_items(self) {
         let mut curr_lvl = 0; // Non-existent
         for SqLocalVarWithLvl { var: SqLocalVar { name, val }, lvl } in self {
             if *lvl != curr_lvl {
@@ -850,21 +845,19 @@ impl ScriptBuffers {
     }
 }
 
-impl ListItems for ScriptBuffers {
-    fn list_items(&self) {
+impl IntoListItems for &ScriptBuffers {
+    fn list_items(self) {
         const NUM_FIELD: usize = 8;
 
         if self.store.is_empty() {
-            print!("no buffers available");
+            println!("no buffers available");
             return;
         }
 
-        print!("{:<NUM_FIELD$}content", "number");
+        println!("{:<NUM_FIELD$}content", "number");
         for (n, buf) in &self.store {
-            // print separating newline
-            println!();
             let line = buf.lines().next();
-            print!("{n:<NUM_FIELD$}{} ...", if let Some(l) = line{ l } else { "" });
+            println!("{n:<NUM_FIELD$}{}", if let Some(l) = line{ l } else { "<empty>" });
         }
     }
 }
@@ -978,9 +971,14 @@ where I: Iterator<Item = T> {
     }
 }
 
-impl ListItems for Vec<SqSrcDir> {
-    fn list_items(&self) {
+impl IntoListItems for &Vec<SqSrcDir> {
+    fn list_items(self) {
         const PATH_FIELD: usize = 40;
+
+        if self.is_empty() {
+            println!("no source directories registered");
+            return;
+        }
 
         println!("{:<PREFIX_FIELD$}{:<PATH_FIELD$}files", "prefix", "path");
         for SqSrcDir { path, prefix, files } in self {
