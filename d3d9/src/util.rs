@@ -300,35 +300,35 @@ impl DebuggerFrontend {
 
     /// Match dot-separated path in container recursively
     fn match_local_path<'a, I>(mut path: I, root: &DynSqVar) -> Option<&DynSqVar>
-    where I: Iterator<Item = &'a str> + Clone {
+    where I: Iterator<Item = &'a SqPathToken<'a>> + Clone {
+        use SqPathToken::*;
+        
         let Some(key) = path.next() else {
             return None;
         };
 
-        let index: Option<SqInteger> = key.parse().ok();
-        
-
         let child = match root {
             DynSqVar::Table(map)
             | DynSqVar::Class(map)
-            | DynSqVar::Instance(SqInstance { this: map }) => {
-                if let Some(idx) = index {
+            | DynSqVar::Instance(SqInstance { this: map }) => match key {
+                Seg(seg) | QuotedSeg(seg) => {
                     map.iter().find(|(k, _)| {
-                        matches!(k, DynSqVar::Integer(i) if *i == idx)
-                        || matches!(k, DynSqVar::String(s) if s == key)
+                        matches!(k, DynSqVar::String(s) if s == seg)
                     })
-                } else {
+                }
+                Number(idx) => {
                     map.iter().find(|(k, _)| {
-                        matches!(k, DynSqVar::String(s) if s == key)
+                        matches!(k, DynSqVar::Integer(i) if *i == *idx as i32)
                     })
-                }.map(|(_, v)| v)
-            },
+                }
+                _ => None,
+            }.map(|(_, v)| v),
 
-            DynSqVar::Array(v) => 
-            if let Some(idx @ 0..) = index {
-                v.get(idx as usize)
-            } else { None },
-
+            DynSqVar::Array(v) => match key {
+                Number(idx) => v.get(*idx as usize),
+                _ => None
+            }
+            
             _ => None,
         };
 
@@ -341,29 +341,51 @@ impl DebuggerFrontend {
     }
 
     // TODO: Make lazily evaluated containers
-    // TODO: Make it possible to match keys with spaces for tables
     /// Pretty-print local variable, try to find local by it's dot-separated path
-    fn examine(dbg: &dbg::SqDebugger, path: &str, mut level: Option<SqUnsignedInteger>, mut depth: u32) {
-        let mut path_seg = path.split('.');
+    fn examine(
+        dbg: &dbg::SqDebugger, 
+        path: &str,
+        mut level: Option<SqUnsignedInteger>, 
+        mut depth: u32
+    ) {
+        use SqPathToken::*;
+        let segments: Result<Vec<SqPathToken>, ()> = SqPathToken::lexer(path)    
+            .filter_map(|s| match s {
+                Number(_) | Seg(_) | QuotedSeg(_) => Some(Ok(s)),
+                Error => Some(Err(())),
+                _ => None
+            })
+            .collect();
 
-        let mut root_name = path_seg.next().unwrap();
+        let segments = match segments {
+            Ok(segs) if segs.is_empty() => return println!("path is empty"),
+            Ok(segs) => segs,
+            Err(_) => return println!("path is invalid"),
+        };
 
-        // Check if first path segment is call stack level
-        if let Ok(lvl) = root_name.parse() { 
-            level = Some(lvl);
-            let Some(root) = path_seg.next() else {
+        let (root_name, seg_cnt) = match &segments[..2.min(segments.len())] {
+            // Check if first path segment is call stack level
+            [Number(lvl), Seg(root) | QuotedSeg(root)] => {
+                level = Some(*lvl);
+                (*root, segments.len() - 2)
+            },
+            
+            [Seg(root) | QuotedSeg(root)]
+            | [Seg(root) | QuotedSeg(root), ..] => (*root, segments.len() - 1),
+            
+            [Number(_)] => {
                 println!("Local path not specified, only call stack level");
-                return;
-            };
-            root_name = root;
+                return
+            }
+            
+            _ => unreachable!(),
         };
 
         // Add minimal length needed to match path
-        let seg_cnt = path_seg.clone().count();
-        if seg_cnt > 0 {
-            depth += seg_cnt as u32
-        }
-
+        depth += seg_cnt as u32;
+        
+        let path_seg = segments.iter().skip(segments.len() - seg_cnt);
+        
         match dbg.get_locals(level, depth) {
             Ok(locs) => {
                 for SqLocalVarWithLvl { var: SqLocalVar { name, val }, ..} in locs {
@@ -865,6 +887,44 @@ impl IntoListItems for &ScriptBuffers {
     }
 }
 
+/// Tokens for specification of path to variable
+#[derive(Debug, Logos)]
+enum SqPathToken<'lex> {   
+    #[regex("[0-9]+", |lex| lex.slice().parse())]
+    Number(SqUnsignedInteger),
+    
+    #[regex(r"\.")]
+    Dot,
+
+    #[regex("[a-zA-Z_][a-zA-Z0-9_]*", |lex| lex.slice())]
+    Seg(&'lex str),
+    
+    #[regex(r#""([^"]*)""#, |lex| lex.slice())]
+    QuotedSeg(&'lex str),
+    
+    #[error]
+    Error,
+}
+
+/// Tokens for specification of breakpoint
+#[derive(Debug, Logos)]
+enum SqBrkSpecToken<'lex> {
+    #[regex("file")]
+    File,
+        
+    #[regex(":")]
+    Sep,
+    
+    #[regex("[0-9]+", |lex| lex.slice())]
+    Number(&'lex str),
+
+    #[regex("[a-zA-Z_][a-zA-Z0-9_]*", |lex| lex.slice())]
+    FuncIdent(&'lex str),
+    
+    #[error]
+    Error,
+}
+
 #[derive(Debug)]
 /// Information about class in src file
 struct SqClass {
@@ -918,7 +978,7 @@ enum SqToken<'lex> {
     #[token("class")]
     Class,
 
-    #[regex("[a-zA-Z0-9.]+", |lex| lex.slice())]
+    #[regex("[a-zA-Z0-9_.]+", |lex| lex.slice())]
     IdentPath(&'lex str),
 
     /// Required to ignore braces in string literals
