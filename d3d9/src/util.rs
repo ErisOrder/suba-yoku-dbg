@@ -5,7 +5,8 @@ use std::{
     io::Read, path::Path, ops::Range, time::Duration,
 };
 use clap::{Subcommand, Command, FromArgMatches};
-use anyhow::Result;
+use anyhow::{Result, bail};
+use logos::Logos;
 use serde::{Serialize, Deserialize};
 use crate::hooks;
 
@@ -394,6 +395,8 @@ impl DebuggerFrontend {
         let mut bp_proto = dbg::SqBreakpoint::new();
         let spec = spec.split(':').collect::<Vec<_>>();
 
+        // TODO: Use Logos to parse spec. Also extract parsing to separate fucnction to use with src command
+        
         // Parse src file if present
         let spec = {
             let spec = &spec[..];
@@ -431,7 +434,7 @@ impl DebuggerFrontend {
     /// Create or edit buffer
     fn edit_buffer(prev: Option<&str>) -> Result<String> {
         match scrawl::editor::new()
-            .editor("nvim")
+            .editor("hx")
             .extension(".nut")
             .contents(prev.unwrap_or_default())
             .open() 
@@ -741,20 +744,15 @@ impl DebuggerFrontend {
     }
 }
 
-/// Listing container contents
-trait ListItems {
-    /// Print list of contained items
-    fn list_items(&self);
-}
 
-/// Listing iterator elements
+/// Listing iterator or container elements
 trait IntoListItems {
     /// Print list of iterated elements
     fn list_items(self);
 }
 
-impl ListItems for dbg::BreakpointStore {
-    fn list_items(&self) {
+impl IntoListItems for &dbg::BreakpointStore {
+    fn list_items(self) {
         const BP_NUMBER_FIELD: usize = 8;
         const BP_ENABLED_FIELD: usize = 10;
 
@@ -782,7 +780,7 @@ impl ListItems for dbg::BreakpointStore {
     }
 }
 
-impl ListItems for Vec<SqLocalVarWithLvl> {
+impl IntoListItems for &Vec<SqLocalVarWithLvl> {
     /// Print locals in form
     /// ```rs
     /// Level X locals:
@@ -791,7 +789,7 @@ impl ListItems for Vec<SqLocalVarWithLvl> {
     /// Level Y locals:
     /// ...
     /// ```
-    fn list_items(&self) {
+    fn list_items(self) {
         let mut curr_lvl = 0; // Non-existent
         for SqLocalVarWithLvl { var: SqLocalVar { name, val }, lvl } in self {
             if *lvl != curr_lvl {
@@ -850,54 +848,181 @@ impl ScriptBuffers {
     }
 }
 
-impl ListItems for ScriptBuffers {
-    fn list_items(&self) {
+impl IntoListItems for &ScriptBuffers {
+    fn list_items(self) {
         const NUM_FIELD: usize = 8;
 
         if self.store.is_empty() {
-            print!("no buffers available");
+            println!("no buffers available");
             return;
         }
 
-        print!("{:<NUM_FIELD$}content", "number");
+        println!("{:<NUM_FIELD$}content", "number");
         for (n, buf) in &self.store {
-            // print separating newline
-            println!();
             let line = buf.lines().next();
-            print!("{n:<NUM_FIELD$}{} ...", if let Some(l) = line{ l } else { "" });
+            println!("{n:<NUM_FIELD$}{}", if let Some(l) = line{ l } else { "<empty>" });
         }
     }
 }
 
+#[derive(Debug)]
 /// Information about class in src file
 struct SqClass {
     name: String,
     base: Option<String>
 }
 
+#[derive(Debug)]
 /// Information about function in src file
 struct SqFunc {
     name: String,
-    class: Rc<RefCell<SqClass>>
+    class: Option<Rc<SqClass>>
 }
 
+#[derive(Debug)]
 /// Class or function
 enum SqItem {
     Func(SqFunc),
-    Class(SqClass),
+    Class(Rc<SqClass>),
 }
 
+#[derive(Debug)]
 /// Source file item with span
 struct SqSrcItem {
     item: SqItem,
-    lines: Range<SqInteger>
+    lines: Range<usize>
 }
 
+#[derive(Debug)]
 /// Source file with name, text and parsed items
 struct SqSrcFile {
     name: String,
     text: String,
-    items: Vec<SqItem>
+    items: Vec<SqSrcItem>
+}
+
+/// Minimal lexer to get function and classes definitions with spans
+#[derive(Logos, Debug, PartialEq)]
+enum SqToken<'lex> {
+    #[token("{")]
+    BraceL,
+    #[token("}")]
+    BraceR,
+
+    #[token("function")]
+    Function,
+
+    #[token("extends")]
+    Extends,
+
+    #[token("class")]
+    Class,
+
+    #[regex("[a-zA-Z0-9.]+", |lex| lex.slice())]
+    IdentPath(&'lex str),
+
+    /// Required to ignore braces in string literals
+    #[regex(r#""[^"]*""#)]
+    StringLit,
+
+    /// Used to increment line number while parsing
+    #[regex("\r?\n")]
+    Newline,
+
+    /// Just discard other tokens
+    #[error]
+    #[regex(r"[ \t\f]+", logos::skip)]
+    Other,
+}
+
+/// Simple squirrel source file parser
+struct SqFileParser {
+    item_stack: Vec<(SqItem, usize)>
+}
+
+impl SqFileParser {
+    pub fn new() -> Self {
+        Self { item_stack: vec![] }
+    }
+
+    /// Parse file and return vec with all defined classes and functions.
+    /// Too simple to return meaningful errors, so just use sq compiler to check files
+    pub fn parse(mut self, file: &str) -> Result<Vec<SqSrcItem>> {
+        const WIN_SIZE: usize = 4;
+        
+        let padding = (0..WIN_SIZE - 1).map(|_| SqToken::Other);
+        // Create vector with padding
+        let parts: Vec<_> = padding.clone().chain(
+                SqToken::lexer(file).filter(|t| !matches!(t, SqToken::Other))
+            )
+            .chain(padding)
+            .collect();
+        
+        let mut items = vec![];
+        
+        // Functions can be defined in other functions
+        // and classes can be defined in functions
+        let mut open_braces = 0;
+        let mut line = 0;
+        for window in parts.windows(WIN_SIZE) {
+            use SqToken::*;
+            // let [a, b, c, d] = window else { break };
+            // println!("{window:?}");
+            match window {
+                [Class, IdentPath(ident), Extends, IdentPath(base)] => {
+                    let class = Rc::new(SqClass {
+                        name: ident.to_string(),
+                        base: Some(base.to_string()),
+                    });
+                    self.item_stack.push((SqItem::Class(class), line));
+                }
+                [Class, IdentPath(ident), ..] => {
+                    let class = Rc::new(SqClass {
+                        name: ident.to_string(),
+                        base: None,
+                    });
+                    self.item_stack.push((SqItem::Class(class), line));
+                }
+                [Function, IdentPath(ident), ..] => {
+                    let func = SqFunc {
+                        name: ident.to_string(),
+                        class: self.last_class().cloned(),
+                    };
+                    // Push function with its start line
+                    self.item_stack.push((SqItem::Func(func), line));    
+                }  
+                [BraceL, ..] => open_braces += 1,
+                [BraceR, ..] => {
+                    open_braces -= 1;
+                    // if no unmatched braces left, pop last item from stack
+                    if !self.item_stack.is_empty() && open_braces == self.item_stack.len() - 1 {
+                        let (item, s_line) = self.item_stack.pop().unwrap();
+                        items.push(SqSrcItem {
+                            item,
+                            lines: s_line..line,
+                        })
+                    }
+                },
+                [Newline, ..] => line += 1,
+                _ => (),
+            }
+        }
+
+        if open_braces > 0 {
+            bail!("Unmatched brace found, try to compile file to get more useful error");
+        }
+        Ok(items)
+    }
+
+    fn last_class(&self) -> Option<&Rc<SqClass>> {
+        self.item_stack.iter()
+            .rev()
+            .find(|(i, _)| matches!(i, SqItem::Class(_)))
+            .map(|(i, _)| { 
+                let SqItem::Class(c) = i else { unreachable!() };
+                c
+            })
+    }
 }
 
 impl SqSrcFile {
@@ -911,6 +1036,12 @@ impl SqSrcFile {
         };
 
         f.read_to_string(&mut file.text)?;
+
+        // Ok so do we reaally need this or just displaying window into source code,
+        // with lines from debug events, without any item context, will be sufficient?.. 
+        // But it would be nice if one can just `src print file:some_func` to get some_func sources... 
+        file.items = SqFileParser::new().parse(&file.text)?;
+        
 
         Ok(file)
     }
@@ -978,9 +1109,14 @@ where I: Iterator<Item = T> {
     }
 }
 
-impl ListItems for Vec<SqSrcDir> {
-    fn list_items(&self) {
+impl IntoListItems for &Vec<SqSrcDir> {
+    fn list_items(self) {
         const PATH_FIELD: usize = 40;
+
+        if self.is_empty() {
+            println!("no source directories registered");
+            return;
+        }
 
         println!("{:<PREFIX_FIELD$}{:<PATH_FIELD$}files", "prefix", "path");
         for SqSrcDir { path, prefix, files } in self {

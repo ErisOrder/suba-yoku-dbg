@@ -31,3 +31,4 @@ serde = { workspace = true }
 squirrel2-kaleido-rs = { workspace = true }
 sq-common = { workspace = true }
 util-proc-macro = { workspace = true }
+logos = "0.12.1"
