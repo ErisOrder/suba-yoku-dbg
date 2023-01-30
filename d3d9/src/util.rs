@@ -55,6 +55,12 @@ enum SrcCommands {
     Show {
         /// Path to function. See `help b`.
         spec: String,
+
+        /// TESTING
+        window: Option<usize>,
+
+        /// TESTING
+        cursor: Option<usize>,
     },
 
     /// List all sources directories
@@ -569,8 +575,8 @@ impl DebuggerFrontend {
                 }
             }
 
-            // TODO: Proper show withline numbers, print error if mutliple spec matches found
-            SrcCommands::Show { spec } => {
+            // TODO: print error if mutliple spec matches found
+            SrcCommands::Show { spec, window, cursor } => {
                 let spec = match BrkSpec::parse(&spec) {
                     Ok(s) => s,
                     Err(_) => return println!("failed to parse path"),
@@ -578,7 +584,7 @@ impl DebuggerFrontend {
 
                 for (path, chunk) in self.srcs.find(&spec) {
                     println!("{path}:");
-                    println!("{chunk}");
+                    Self::print_augmented_code_chunk(chunk, path.line.unwrap() as usize, cursor, window);
                 }
             }
 
@@ -665,6 +671,86 @@ impl DebuggerFrontend {
         }
     }
 
+    /// Print code chunk with execution point cursor, line numbers
+    /// and in window of selected size.
+    ///
+    /// Lines will be dedented by first line`s indent.
+    ///
+    /// Linenumbers will start from `start_line`. 
+    /// Cursor must be in range from `start_line` to `start_line + [lines count]` 
+    ///
+    /// Window will follow cursor. 
+    fn print_augmented_code_chunk(
+        chunk: &str, 
+        start_line: usize, 
+        cursor: Option<usize>,
+        window_size: Option<usize>
+    ) {
+        let lines_cnt = chunk.lines().count();
+        let valid_range = start_line..start_line + lines_cnt;
+
+        if matches!(cursor, Some(cur) if !valid_range.contains(&cur)) {
+            return println!("cursor out of range")
+        }
+
+        // Calculate window range
+        let window = match window_size {
+            Some(size) => {
+                let size = size.min(lines_cnt);
+                let half_win = size / 2;
+                match cursor {
+                    Some(mut vcur) => {
+                        let to_start = vcur - valid_range.start;
+                        let to_end = valid_range.end - vcur;
+                        
+                        if to_start <= half_win {
+                            vcur += half_win - to_start;                             
+                        }
+
+                        if to_end < half_win {
+                            vcur -= half_win - to_end;
+                        }
+
+                        vcur -= valid_range.start;
+                        (vcur - half_win)..(vcur + half_win)
+                    }
+                    None => 0..size,
+                }
+            },
+            None => 0..lines_cnt,
+        };
+        dbg!(&window);
+        // Lines will be dedented by first line indentation count 
+        let indent = chunk.chars().take_while(|&c| c == ' ' || c == '\t').count();
+        let indent_pat = &chunk[..indent];
+
+        // Calculte minimum width needed to display all line numbers
+        let linenum_width = 1 + (0..)
+            .map(|p| valid_range.end / 10usize.pow(p))
+            .take_while(|res| *res > 0)
+            .count();
+        
+        let lines = chunk.lines()
+            .enumerate()
+            .skip(window.start)
+            .take(window.len())
+            .map(|(idx, line)| (idx + valid_range.start, line)); 
+        
+        for (number, line) in lines {
+            let line = line.strip_prefix(indent_pat).unwrap_or(line);
+
+            // Print cursor or padding or nothing
+            match cursor {
+                Some(cur) if number == cur => print!("-> "),
+                Some(_) => print!("   "),
+                None => (),
+            };
+        
+            println!("{number:<linenum_width$}{line}");
+        }
+
+    }
+    
     /// Save arguments to internal buffer, if successful
     fn parse_args(&mut self, args: &str) -> Result<()> {
         match Self::cli().try_get_matches_from(args.trim().split(' ')) {
@@ -911,6 +997,29 @@ struct BrkSpec {
     line: Option<SqUnsignedInteger>,
 }
 
+impl std::fmt::Display for BrkSpec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut part_was = false;
+
+        if let Some(src) = &self.file {
+            write!(f, "file:{src}")?;
+            part_was = true;
+        }        
+
+        if let Some(func) = &self.func {
+            if part_was { write!(f, ":")?; }
+            write!(f, "{func}")?;
+            part_was = true;
+        }
+
+        if let Some(line) = &self.line {
+            if part_was { write!(f, ":")?; }
+            write!(f, "{line}")?;
+        }
+        Ok(())
+    }
+}
+
 impl BrkSpec {
     pub fn parse(input: &str) -> Result<Self, ()> {
         use SqBrkSpecToken::*;
@@ -1065,7 +1174,7 @@ impl SqFileParser {
         // Functions can be defined in other functions
         // and classes can be defined in functions
         let mut open_braces = 0;
-        let mut line = 0;
+        let mut line = 1;
         let mut last_nl = 0;
         for window in parts.windows(WIN_SIZE) {
             use SqToken::*;
@@ -1203,11 +1312,12 @@ impl SourceDB {
         )
     }
 
+    // TODO: Add special cases like class constructor and main function
     /// Return iterator over matched functions: `(path, slice)`
     pub fn find<'spec>(
         &'spec self, 
         spec: &'spec BrkSpec
-    ) -> impl Iterator<Item = (String, &str)> + 'spec {
+    ) -> impl Iterator<Item = (BrkSpec, &str)> + 'spec {
         self.iter_files()
             // Filter out by prefix
             .filter(|file| if let Some(path) = &spec.file {
@@ -1234,10 +1344,11 @@ impl SourceDB {
             })
             // Extract item path and slice
             .map(|(file, it)| (
-                format!("{}:{}:{}", 
-                    file.iter_name().collect::<String>(),
-                    it.item.name(),
-                    it.lines.start),
+                BrkSpec {
+                    file: Some(file.iter_name().collect::<String>()),
+                    func: Some(it.item.name()),
+                    line: Some(it.lines.start as u32),
+                },
                 &file.1.text[it.span.clone()]
             ))
     }
