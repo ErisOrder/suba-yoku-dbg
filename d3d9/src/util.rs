@@ -414,40 +414,16 @@ impl DebuggerFrontend {
 
     /// Parse breakpoint specification 
     fn add_breakpoint(dbg: &dbg::SqDebugger, spec: &str) {
-        let mut bp_proto = dbg::SqBreakpoint::new();
-        let spec = spec.split(':').collect::<Vec<_>>();
-
-        // TODO: Use Logos to parse spec. Also extract parsing to separate fucnction to use with src command
-        
-        // Parse src file if present
-        let spec = {
-            let spec = &spec[..];
-            if let ["file", src, ..] = spec[..] {
-                bp_proto = bp_proto.src_file(src.to_string());
-                &spec[2..]
-            } else { spec }
+        let spec = match BrkSpec::parse(spec) {
+            Ok(s) => s,
+            Err(_) => return println!("failed to parse specification"),
         };
-
-        // Parse remaining
-        let bp = match spec {
-            [func, line]
-            if func.starts_with(|c: char| !c.is_numeric())
-            && line.chars().all(|c| c.is_ascii_digit())
-                => bp_proto.fn_name(func.to_string())
-                    .line(line.parse().unwrap()),
-
-            [line] if line.chars().all(|c| c.is_ascii_digit())
-                => bp_proto.line(line.parse().unwrap()),
-
-            [func] if func.starts_with(|c: char| !c.is_numeric())
-                => bp_proto.fn_name(func.to_string()),
-
-            [] => bp_proto,
-
-            _ => {
-                println!("Invalid breakpoint format");
-                return;
-            }
+        
+        let bp = dbg::SqBreakpoint {
+            line: spec.line.map(|l| l as i32),
+            fn_name: spec.func,
+            src_file: spec.file,
+            ..dbg::SqBreakpoint::new()
         };
 
         dbg.breakpoints().add(bp);
@@ -914,15 +890,72 @@ enum SqBrkSpecToken<'lex> {
         
     #[regex(":")]
     Sep,
-    
-    #[regex("[0-9]+", |lex| lex.slice())]
-    Number(&'lex str),
 
-    #[regex("[a-zA-Z_][a-zA-Z0-9_]*", |lex| lex.slice())]
-    FuncIdent(&'lex str),
+    #[regex(r"[a-zA-Z_./\\]+", |lex| lex.slice())]
+    FilePath(&'lex str),
+    
+    #[regex("[0-9]+", |lex| lex.slice().parse())]
+    Number(SqUnsignedInteger),
+
+    #[regex("[a-zA-Z_][a-zA-Z0-9_]*", |lex| lex.slice(), priority = 2)]
+    Ident(&'lex str),
     
     #[error]
     Error,
+}
+
+/// Parsed breakpoint or function specification
+struct BrkSpec {
+    file: Option<String>,
+    func: Option<String>,
+    line: Option<SqUnsignedInteger>,
+}
+
+impl BrkSpec {
+    pub fn parse(input: &str) -> Result<Self, ()> {
+        use SqBrkSpecToken::*;
+        let parts: Result<Vec<_>, ()> = SqBrkSpecToken::lexer(input)
+            .enumerate()
+            .filter_map(|(i, p)| match p {
+                // file : path : fn : line
+                // : separator is always on odd index, tokens on even
+                Sep if i % 2 != 0 => None,
+                Sep | Error => Some(Err(())), 
+                tok if i % 2 == 0 => Some(Ok(tok)),
+                _ => Some(Err(()))
+            })
+            .collect();
+
+        let parts = parts?;
+        let (file, parts) = match &parts[..2.min(parts.len())] {
+            [File, FilePath(path) | Ident(path)] => (Some(path.to_string()), &parts[2..]),
+            _ => (None, &parts[..]),           
+        };
+
+        Ok(match parts {
+            [] => Self {
+                file,
+                func: None,
+                line: None,
+            },
+            [Ident(f)] => Self {
+                file,
+                func: Some(f.to_string()),
+                line: None,
+            },
+            [Number(l)] => Self {
+                file,
+                func: None,
+                line: Some(*l),
+            },
+            [Ident(f), Number(l)] => Self {
+                file,
+                func: Some(f.to_string()),
+                line: Some(*l),
+            },
+            _ => return Err(())
+        })
+    }
 }
 
 #[derive(Debug)]

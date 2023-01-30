@@ -104,24 +104,6 @@ impl SqBreakpoint {
         }
     }
 
-    /// Set line condition
-    pub fn line(mut self, line: SqInteger) -> Self {
-        self.line = Some(line);
-        self
-    }
-
-    /// Set function name condition
-    pub fn fn_name(mut self, fn_name: String) -> Self {
-        self.fn_name = Some(fn_name);
-        self
-    }
-
-    /// Set source file condition
-    pub fn src_file(mut self, src_file: String) -> Self {
-        self.src_file = Some(src_file);
-        self
-    }
-
     /// Try to match debug event with breakpoint conditions
     pub fn match_event(&self, event: &DebugEventWithSrc) -> bool {
         let DebugEventWithSrc { event, src } = event; 
