@@ -1,7 +1,7 @@
 use sq_common::{*, dbg::{SqLocalVarWithLvl, SqBreakpoint}};
 use std::{
     sync::{atomic, Mutex, Arc},
-    fs::{File, read_dir}, cell::RefCell, rc::Rc,
+    fs::{File, read_dir}, rc::Rc,
     io::Read, path::Path, ops::Range, time::Duration,
 };
 use clap::{Subcommand, Command, FromArgMatches};
@@ -48,11 +48,13 @@ enum SrcCommands {
         prefix: Option<String>,
     },
 
-    /// Display source file
-    #[clap(visible_alias = "p")]
-    Print {
-        /// File name with prefix
-        file: String,
+    /// Display specified function source.
+    ///
+    /// Path to function can be specified similarly to breakpoints
+    #[clap(visible_alias = "s")]
+    Show {
+        /// Path to function. See `help b`.
+        spec: String,
     },
 
     /// List all sources directories
@@ -154,7 +156,7 @@ enum Commands {
         ///
         /// Must be in format [file:<src>]:[function]:[line].
         ///
-        /// At least 1 condition must be specified.
+        /// At least 1 parameter must be specified.
         spec: String
     },
 
@@ -567,17 +569,16 @@ impl DebuggerFrontend {
                 }
             }
 
-            SrcCommands::Print { file } => {
-                if let Some((_, f)) = self.srcs.iter_files().find(
-                    |(pref, f)| match pref {
-                        Some(pref) => {
-                            // Chain prefix with name and compare to string
-                            pref.chars().chain(f.name.chars()).eq(file.chars())
-                        },
-                        None => f.name == file
-                    }
-                ) {
-                    println!("{}", f.text);
+            // TODO: Proper show withline numbers, print error if mutliple spec matches found
+            SrcCommands::Show { spec } => {
+                let spec = match BrkSpec::parse(&spec) {
+                    Ok(s) => s,
+                    Err(_) => return println!("failed to parse path"),
+                };
+
+                for (path, chunk) in self.srcs.find(&spec) {
+                    println!("{path}:");
+                    println!("{chunk}");
                 }
             }
 
@@ -904,7 +905,6 @@ enum SqBrkSpecToken<'lex> {
     Error,
 }
 
-/// Parsed breakpoint or function specification
 struct BrkSpec {
     file: Option<String>,
     func: Option<String>,
@@ -958,35 +958,43 @@ impl BrkSpec {
     }
 }
 
-#[derive(Debug)]
 /// Information about class in src file
 struct SqClass {
     name: String,
     base: Option<String>
 }
 
-#[derive(Debug)]
 /// Information about function in src file
 struct SqFunc {
     name: String,
     class: Option<Rc<SqClass>>
 }
 
-#[derive(Debug)]
 /// Class or function
 enum SqItem {
     Func(SqFunc),
     Class(Rc<SqClass>),
 }
 
-#[derive(Debug)]
+impl SqItem {
+    /// Get fully qualified name
+    pub fn name(&self) -> String {
+        match self {
+            SqItem::Func(SqFunc { name, class: Some(c) }) => 
+                format!("{}::{}", c.name, name),
+            SqItem::Func(f) => f.name.to_string(),
+            SqItem::Class(c) => c.name.to_string(),
+        }
+    }
+}
+
 /// Source file item with span
 struct SqSrcItem {
     item: SqItem,
-    lines: Range<usize>
+    lines: Range<usize>,
+    span: Range<usize>,
 }
 
-#[derive(Debug)]
 /// Source file with name, text and parsed items
 struct SqSrcFile {
     name: String,
@@ -999,8 +1007,8 @@ struct SqSrcFile {
 enum SqToken<'lex> {
     #[token("{")]
     BraceL,
-    #[token("}")]
-    BraceR,
+    #[token("}", |lex| lex.span().end)]
+    BraceR(usize),
 
     #[token("function")]
     Function,
@@ -1018,9 +1026,10 @@ enum SqToken<'lex> {
     #[regex(r#""[^"]*""#)]
     StringLit,
 
-    /// Used to increment line number while parsing
-    #[regex("\r?\n")]
-    Newline,
+    /// Used to increment line number while parsing.
+    /// Also holds end of its span to simplify getting slice of file later
+    #[regex("\r?\n", |lex| lex.span().end)]
+    Newline(usize),
 
     /// Just discard other tokens
     #[error]
@@ -1030,7 +1039,7 @@ enum SqToken<'lex> {
 
 /// Simple squirrel source file parser
 struct SqFileParser {
-    item_stack: Vec<(SqItem, usize)>
+    item_stack: Vec<(SqItem, usize, usize)>
 }
 
 impl SqFileParser {
@@ -1057,46 +1066,49 @@ impl SqFileParser {
         // and classes can be defined in functions
         let mut open_braces = 0;
         let mut line = 0;
+        let mut last_nl = 0;
         for window in parts.windows(WIN_SIZE) {
             use SqToken::*;
-            // let [a, b, c, d] = window else { break };
-            // println!("{window:?}");
             match window {
                 [Class, IdentPath(ident), Extends, IdentPath(base)] => {
                     let class = Rc::new(SqClass {
                         name: ident.to_string(),
                         base: Some(base.to_string()),
                     });
-                    self.item_stack.push((SqItem::Class(class), line));
+                    self.item_stack.push((SqItem::Class(class), line, last_nl));
                 }
                 [Class, IdentPath(ident), ..] => {
                     let class = Rc::new(SqClass {
                         name: ident.to_string(),
                         base: None,
                     });
-                    self.item_stack.push((SqItem::Class(class), line));
+                    self.item_stack.push((SqItem::Class(class), line, last_nl));
                 }
                 [Function, IdentPath(ident), ..] => {
                     let func = SqFunc {
                         name: ident.to_string(),
                         class: self.last_class().cloned(),
                     };
-                    // Push function with its start line
-                    self.item_stack.push((SqItem::Func(func), line));    
+                    // Push function with its start line and start pos
+                    self.item_stack.push((SqItem::Func(func), line, last_nl));    
                 }  
                 [BraceL, ..] => open_braces += 1,
-                [BraceR, ..] => {
+                [BraceR(span_end), ..] => {
                     open_braces -= 1;
                     // if no unmatched braces left, pop last item from stack
                     if !self.item_stack.is_empty() && open_braces == self.item_stack.len() - 1 {
-                        let (item, s_line) = self.item_stack.pop().unwrap();
+                        let (item, s_line, span_start) = self.item_stack.pop().unwrap();
                         items.push(SqSrcItem {
                             item,
                             lines: s_line..line,
+                            span: span_start..*span_end
                         })
                     }
                 },
-                [Newline, ..] => line += 1,
+                [Newline(nl), ..] => {
+                    line += 1;
+                    last_nl = *nl;
+                },
                 _ => (),
             }
         }
@@ -1110,8 +1122,8 @@ impl SqFileParser {
     fn last_class(&self) -> Option<&Rc<SqClass>> {
         self.item_stack.iter()
             .rev()
-            .find(|(i, _)| matches!(i, SqItem::Class(_)))
-            .map(|(i, _)| { 
+            .find(|(i, ..)| matches!(i, SqItem::Class(_)))
+            .map(|(i, ..)| { 
                 let SqItem::Class(c) = i else { unreachable!() };
                 c
             })
@@ -1184,12 +1196,66 @@ impl SourceDB {
     /// Get all files' with their prefixes iterator
     pub fn iter_files(&self) -> FileIter<impl Iterator<Item = FileWithPrefixRef<'_>>> {
         FileIter(self.0.iter().flat_map(
-            |d| [&d.prefix].into_iter().cycle().zip(d.files.iter()))
+            |d| [&d.prefix].into_iter()
+                .cycle()
+                .zip(d.files.iter()))
+                .map(|(p, f)| FileWithPrefixRef(p, f))
         )
+    }
+
+    /// Return iterator over matched functions: `(path, slice)`
+    pub fn find<'spec>(
+        &'spec self, 
+        spec: &'spec BrkSpec
+    ) -> impl Iterator<Item = (String, &str)> + 'spec {
+        self.iter_files()
+            // Filter out by prefix
+            .filter(|file| if let Some(path) = &spec.file {
+                path.chars().eq(file.iter_name())
+            } else { true })
+            // Filter out by linenumber
+            .filter(|file| if let Some(line) = &spec.line {
+                file.1.text.lines().count() >= *line as usize
+            } else { true })
+            // Get matching items from files  
+            .flat_map(|file| { 
+                file.1.items.iter()
+                    // Filter by name
+                    .filter(|it| match (&it.item, &spec.func) {
+                        (SqItem::Func(_), None) => true,
+                        (SqItem::Func(f), Some(name)) => &f.name == name,
+                        _ => false
+                    })
+                    // Filter by line number
+                    .filter(|it| if let Some(line) = &spec.line {
+                        it.lines.start == *line as usize
+                    } else { true })
+                    .map(move |it| (file.clone(), it))                
+            })
+            // Extract item path and slice
+            .map(|(file, it)| (
+                format!("{}:{}:{}", 
+                    file.iter_name().collect::<String>(),
+                    it.item.name(),
+                    it.lines.start),
+                &file.1.text[it.span.clone()]
+            ))
     }
 }
 
-type FileWithPrefixRef<'a> = (&'a Option<String>, &'a SqSrcFile);
+#[derive(Clone)]
+struct FileWithPrefixRef<'a>(&'a Option<String>, &'a SqSrcFile);
+
+impl<'a> FileWithPrefixRef<'a> {
+    /// Iterator that chains prefix with name
+    pub fn iter_name(&self) -> impl Iterator<Item = char> + 'a {
+        if let Some(ref pref) = self.0 {
+            pref
+        } else {
+            ""
+        }.chars().chain(self.1.name.chars())
+    }
+}
 
 struct FileIter<I>(I);
 
@@ -1226,7 +1292,7 @@ where I: Iterator<Item = FileWithPrefixRef<'a>>  {
     fn list_items(self) {
         const NAME_FIELD: usize = 24;
         println!("{:<PREFIX_FIELD$}{:<NAME_FIELD$}lines", "prefix", "name");
-        for (pref, SqSrcFile { name, text, .. }) in self {
+        for FileWithPrefixRef(pref, SqSrcFile { name, text, .. }) in self {
             println!("{:<PREFIX_FIELD$}{name:<NAME_FIELD$}{}",
                 pref.as_deref().unwrap_or_default(), text.lines().count()
             )
