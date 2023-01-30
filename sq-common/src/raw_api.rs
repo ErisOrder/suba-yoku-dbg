@@ -114,6 +114,10 @@ pub trait VmRawApi: VmHandle {
         
         /// Resets the last error in the virtual machine to null
         safe reset_error -> sq_reseterror(v: HSQUIRRELVM);
+
+        /// In order to receive line callbacks the scripts have to be
+        /// compiled with debug info enabled.
+        safe enable_debug_info -> sq_enabledebuginfo(v: HSQUIRRELVM, enable: bool);
     }
 
     // Unsafe renamed methods
@@ -161,14 +165,9 @@ pub trait VmRawApi: VmHandle {
             sourcename: *const SQChar,
             raiseerror: SQBool
         ) -> SQRESULT;
-        enabledebuginfo(v: HSQUIRRELVM, enable: SQBool);
         notifyallexceptions(v: HSQUIRRELVM, enable: SQBool);
         setcompilererrorhandler(v: HSQUIRRELVM, f: SQCOMPILERERROR);
         poptop(v: HSQUIRRELVM);
-
-
-
-
         newclosure(v: HSQUIRRELVM, func: SQFUNCTION, nfreevars: SQUnsignedInteger);
         setparamscheck(
             v: HSQUIRRELVM,
@@ -176,9 +175,6 @@ pub trait VmRawApi: VmHandle {
             typemask: *const SQChar
         ) -> SQRESULT;
         bindenv(v: HSQUIRRELVM, idx: SQInteger) -> SQRESULT;
-
-
-
         getsize(v: HSQUIRRELVM, idx: SQInteger) -> SQInteger;
         getbase(v: HSQUIRRELVM, idx: SQInteger) -> SQRESULT;
         instanceof(v: HSQUIRRELVM) -> SQBool;
@@ -222,7 +218,6 @@ pub trait VmRawApi: VmHandle {
         getattributes(v: HSQUIRRELVM, idx: SQInteger) -> SQRESULT;
         getclass(v: HSQUIRRELVM, idx: SQInteger) -> SQRESULT;
         getdefaultdelegate(v: HSQUIRRELVM, t: SQObjectType) -> SQRESULT;
-
         pushregistrytable(v: HSQUIRRELVM);
         pushconsttable(v: HSQUIRRELVM);
         setroottable(v: HSQUIRRELVM) -> SQRESULT;

@@ -391,6 +391,9 @@ impl SqDebugger
                         resp_tx.send(DebugResp::EvalResult(res)).unwrap();
 
                         debugging = true;
+
+                        // Halt after evaluation
+                        exec_state.store(ExecState::Halted, Ordering::Relaxed);
                     }
                 }}
 
