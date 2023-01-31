@@ -2,7 +2,7 @@ use sq_common::{*, dbg::{SqLocalVarWithLvl, SqBreakpoint}};
 use std::{
     sync::{atomic, Mutex, Arc, RwLock},
     fs::{File, read_dir}, rc::Rc,
-    io::Read, path::Path, ops::Range, time::Duration,
+    io::Read, path::Path, ops::Range, time::Duration, 
 };
 use clap::{Subcommand, Command, FromArgMatches};
 use anyhow::{Result, bail};
@@ -28,7 +28,7 @@ impl From<BoolVal> for bool {
     }
 }
 
-#[derive(Subcommand, Debug)]
+#[derive(Subcommand, Debug, Clone)]
 enum SetCommands {
     /// Activate or deactivate printf hook of sqvm
     PrintfHook {
@@ -113,8 +113,29 @@ enum BufferCommands {
     List,
 }
 
+/// Evaluate specified command every time when other commands evaluated
+#[derive(Subcommand, Debug, Clone)]
+enum DisplayCommands {
+    /// Add command to evaluation list.
+    #[clap(visible_alias = "a")]
+    Add {
+        cmd: Vec<String>,
+    },
+
+    /// Remove command from evaluation list by number.
+    #[clap(visible_alias = "d")]
+    Delete {
+        /// Command number. If not specified, all commands will be removed
+        num: Option<u32>
+    },
+
+    /// Display command evaluation list
+    #[clap(visible_alias = "ls")]
+    List
+}
+
 /// CLI Frontend commands
-#[derive(Subcommand, Debug, Default)]
+#[derive(Subcommand, Debug, Clone)]
 enum Commands {
     /// Step one debug callback call
     #[clap(visible_alias = "s")]
@@ -240,6 +261,9 @@ enum Commands {
     #[command(subcommand)]
     Src(SrcCommands),
 
+    #[command(subcommand)]
+    Display(DisplayCommands),
+
     /// Set values of different debugging variables
     #[command(subcommand)]
     Set(SetCommands),
@@ -258,10 +282,6 @@ enum Commands {
         file: Option<String>,
     },
 
-    /// Stub command for no-operation, does nothing
-    #[default]
-    Nop,
-
     /// Exit process
     Exit,
 }
@@ -271,16 +291,17 @@ struct SavedState {
     buffers: ScriptBuffers,
     breakpoints: dbg::BreakpointStore,
     src_dirs: Vec<(String, Option<String>)>,
+    display_cmd: Vec<String>,
 }
 
 /// CLI Frontend for SQ debugger
 pub struct DebuggerFrontend {
-    last_cmd: Commands,
+    last_cmd: Option<Commands>,
     buffers: ScriptBuffers,
     during_eval: bool,
     srcs: SourceDB,
-
-    /// combined Call/Ret and Line events
+    display_cmds: SavedCommands,
+    /// Combined Call/Ret and Line events
     last_event: Arc<RwLock<BrkSpec>>,
 }
 
@@ -612,6 +633,21 @@ impl DebuggerFrontend {
         }
     }
 
+    fn manipulate_display(&mut self, cmd: DisplayCommands) {
+        match cmd {
+            DisplayCommands::Add { cmd } =>{ 
+                let join = cmd.join(" ");
+                match self.parse_args(&join) {
+                    Ok(parsed) => {
+                        self.display_cmds.add(parsed, join);
+                    },
+                    Err(e) => println!("{e}"),
+            }},
+            DisplayCommands::Delete { num } => self.display_cmds.delete(num),
+            DisplayCommands::List => self.display_cmds.list_items(),
+        }    
+    }
+
     /// Search for sources and print results
     fn find_sources(&self, spec: &BrkSpec, window: Option<usize>, cursor: Option<usize>) {
         let (multi, first): (bool, Option<(BrkSpec, &str)>) = self.srcs.find(spec)
@@ -658,9 +694,16 @@ impl DebuggerFrontend {
         Ok(state)
     }
 
-    /// Send last parsed args to debugger
-    fn do_actions(&mut self, dbg: &mut dbg::SqDebugger) {
-        match &self.last_cmd {
+    /// Repeat last executed args
+    fn repeat_last_cmd(&mut self, dbg: &mut dbg::SqDebugger) {
+        if let Some(cmd) = self.last_cmd.take() {
+            self.do_actions(dbg, cmd, true) 
+        }
+    }
+
+    /// Execute parsed args. Save to internal buffer, if owned
+    fn do_actions(&mut self, dbg: &mut dbg::SqDebugger, args: Commands, save: bool) {
+        match &args {
             Commands::Step => dbg.step(),
             Commands::Continue => dbg.resume(),
 
@@ -693,11 +736,18 @@ impl DebuggerFrontend {
 
             Commands::Load { file } => 
             match Self::load(file.as_deref().unwrap_or(DEFAULT_STATE_FILENAME)) {
-                Ok(SavedState { buffers, breakpoints, src_dirs }) => {
+                Ok(SavedState { buffers, breakpoints, src_dirs, display_cmd }) => {
                     self.buffers = buffers;
                     dbg.set_breakpoints(breakpoints);
                     for (path, prefix) in src_dirs {
                         self.manipulate_sources(SrcCommands::Add { path, prefix })
+                    }
+                    for cmd in display_cmd {
+                        let args = match self.parse_args(&cmd) {
+                            Ok(args) => args,
+                            Err(e) => return println!("Failed to parse saved commands: {e}"),
+                        };
+                        self.display_cmds.add(args, cmd);
                     }
                 },
                 Err(e) => println!("Failed to load state: {e}"),
@@ -710,6 +760,10 @@ impl DebuggerFrontend {
                     src_dirs: self.srcs.dirs().iter()
                         .map(|d| (d.path.clone(), d.prefix.clone()))
                         .collect(),
+                    display_cmd: self.display_cmds.store.iter()
+                        .map(|(_, cmd, _)| cmd)
+                        .cloned()
+                        .collect(),
                 };
 
                 if let Err(e) = Self::save(state, file.as_deref().unwrap_or(DEFAULT_STATE_FILENAME)) {
@@ -717,9 +771,12 @@ impl DebuggerFrontend {
                 }
             }
 
+            Commands::Display(cmd) => self.manipulate_display(cmd.clone()),
             Commands::Set(var) => Self::set_var(var),
-            Commands::Nop => (),
             Commands::Exit => std::process::exit(0),
+        };     
+        if save {
+            self.last_cmd = Some(args);
         }
     }
 
@@ -802,14 +859,21 @@ impl DebuggerFrontend {
 
     }
     
-    /// Save arguments to internal buffer, if successful
-    fn parse_args(&mut self, args: &str) -> Result<()> {
-        match Self::cli().try_get_matches_from(args.trim().split(' ')) {
+    /// Parse args  
+    fn parse_args(&mut self, args: &str) -> Result<Commands> {
+        match Self::cli().try_get_matches_from(args.trim().split_ascii_whitespace()) {
             Ok(m) => {
-                self.last_cmd = Commands::from_arg_matches(&m)?;
-                Ok(())
+                Ok(Commands::from_arg_matches(&m)?)
             },
             Err(e) => Err(e.into()),
+        }
+    }
+
+    /// Execute commands stored to display
+    fn do_stored_actions(&mut self, dbg: &mut dbg::SqDebugger) {
+        let stored: Vec<_> = self.display_cmds.iter().cloned().collect();
+        for cmd in stored {
+            self.do_actions(dbg, cmd, false);
         }
     }
 }
@@ -837,10 +901,11 @@ impl DebuggerFrontend {
         // Debugger frontend thread
         std::thread::spawn(move || {
             let mut front = Self { 
-                last_cmd: Commands::default(),
+                last_cmd: None,
                 buffers: ScriptBuffers::new(),
                 during_eval: false,
                 srcs: SourceDB::new(),
+                display_cmds: SavedCommands::new(),
                 last_event: last_event_shared
             };
             
@@ -849,21 +914,27 @@ impl DebuggerFrontend {
             println!("Debugger attached, type `help` to get available commands list");
 
             loop {
-                std::thread::sleep(Duration::from_millis(20));
+                std::thread::sleep(Duration::from_millis(10));
             
                 let mut dbg = shared_dbg.lock().unwrap();
             
                 if let dbg::ExecState::Halted = dbg.exec_state() {
                     std::io::stdin().read_line(&mut arg_str).expect("failed to read cmd line");
-                    
+
                     if !arg_str.trim().is_empty() {
                         match front.parse_args(&arg_str) {
-                            Ok(_) => front.do_actions(&mut dbg),
+                            Ok(args) => front.do_actions(&mut dbg, args, true),
                             Err(e) => println!("{e}"),
                         };
                     } else { 
-                        front.do_actions(&mut dbg);
+                        front.repeat_last_cmd(&mut dbg);
                     }
+
+                    // To allow vm to make step, etc
+                    std::thread::sleep(Duration::from_millis(10));
+                    
+                    front.do_stored_actions(&mut dbg);
+                    
                 
                     arg_str.clear();
                 }
@@ -958,6 +1029,53 @@ impl IntoListItems for &Vec<SqLocalVarWithLvl> {
                 DynSqVar::String(s) => println!(" = \"{s}\""),
                 _ => println!(),
             }
+        }
+    }
+}
+
+// TODO: Generalize all auto-increment-number-associative structs 
+/// Struct allows to manage saved frontend commands
+struct SavedCommands {
+    store: Vec<(u32, String, Commands)>,
+    counter: u32,
+}
+
+impl SavedCommands {
+    /// Create new SavedCommands
+    pub fn new() -> Self {
+        Self { store: vec![], counter: 1 }
+    }
+
+    /// Add command with human-friendly representation. Returns added command number
+    pub fn add(&mut self, cmd: Commands, readable: String) -> u32 {
+        self.store.push((self.counter, readable, cmd));
+        self.counter += 1;
+        self.counter - 1
+    }
+
+    /// Delete command by number
+    pub fn delete(&mut self, number: Option<u32>) {
+        self.store.retain(|(n, ..)| if let Some(num) = number { *n != num } else { false })
+    }
+
+    /// Get iterator over stored commands
+    pub fn iter(&self) -> impl Iterator<Item = &Commands> {
+        self.store.iter().map(|(.., cmd)| cmd)
+    } 
+}
+
+impl IntoListItems for &SavedCommands {
+    fn list_items(self) {
+        const NUM_FIELD: usize = 8;
+
+        if self.store.is_empty() {
+            println!("no commands saved");
+            return;
+        }
+
+        println!("{:<NUM_FIELD$}command", "number");
+        for (n, repr, _) in &self.store {
+            println!("{n:<NUM_FIELD$}{repr}");
         }
     }
 }
@@ -1434,7 +1552,7 @@ impl SourceDB {
         )
     }
 
-    // TODO: Add special cases like class constructor and main function
+    // TODO: Add special cases like class constructor
     /// Return iterator over matched functions: `(path, slice)`
     pub fn find<'spec>(
         &'spec self, 
@@ -1464,7 +1582,7 @@ impl SourceDB {
                     } else { true })
                     .map(move |it| (file.clone(), it))                
             })
-            // Scan function that is not root of file was in output.
+            // Scan if function that is not root of file was in output.
             // The "main" function being added at the end of file parsing,
             // so should appear after all normal functions.
             // If there was no such function, to which specified line belongs,
