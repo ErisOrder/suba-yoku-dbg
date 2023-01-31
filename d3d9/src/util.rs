@@ -1,6 +1,6 @@
 use sq_common::{*, dbg::{SqLocalVarWithLvl, SqBreakpoint}};
 use std::{
-    sync::{atomic, Mutex, Arc},
+    sync::{atomic, Mutex, Arc, RwLock},
     fs::{File, read_dir}, rc::Rc,
     io::Read, path::Path, ops::Range, time::Duration,
 };
@@ -44,23 +44,30 @@ enum SrcCommands {
         /// Path to source root directory
         path: String,
 
-        /// Prefix that will be used for each file.
+        /// Prefix that will be used for each file. Always add / or \ separator to end 
         prefix: Option<String>,
+    },
+
+    // TODO: Add display-like command
+    /// Display current function sources (determined based on received debug events)
+    ///
+    /// NOTE: Decompiled files may preserve definition order, but not line numbers
+    #[clap(visible_alias = "s")]
+    Show {
+        /// Constrain displayed lines count
+        window: Option<usize>,
     },
 
     /// Display specified function source.
     ///
     /// Path to function can be specified similarly to breakpoints
-    #[clap(visible_alias = "s")]
-    Show {
-        /// Path to function. See `help b`.
+    #[clap(visible_alias = "f")]
+    Find {
+        /// Path to function. See `help b`. 
         spec: String,
 
-        /// TESTING
+        /// Constrain displayed lines count
         window: Option<usize>,
-
-        /// TESTING
-        cursor: Option<usize>,
     },
 
     /// List all sources directories
@@ -261,6 +268,7 @@ enum Commands {
 struct SavedState {
     buffers: ScriptBuffers,
     breakpoints: dbg::BreakpointStore,
+    src_dirs: Vec<(String, Option<String>)>,
 }
 
 /// CLI Frontend for SQ debugger
@@ -269,6 +277,9 @@ pub struct DebuggerFrontend {
     buffers: ScriptBuffers,
     during_eval: bool,
     srcs: SourceDB,
+
+    /// combined Call/Ret and Line events
+    last_event: Arc<RwLock<BrkSpec>>,
 }
 
 /// Private methods
@@ -427,14 +438,7 @@ impl DebuggerFrontend {
             Err(_) => return println!("failed to parse specification"),
         };
         
-        let bp = dbg::SqBreakpoint {
-            line: spec.line.map(|l| l as i32),
-            fn_name: spec.func,
-            src_file: spec.file,
-            ..dbg::SqBreakpoint::new()
-        };
-
-        dbg.breakpoints().add(bp);
+        dbg.breakpoints().add(spec.into());
     }
 
     /// Create or edit buffer
@@ -558,7 +562,7 @@ impl DebuggerFrontend {
         
             BufferCommands::Print { num } => 
             if let Some(b) = self.buffers.get(num) {
-                println!("{b}");
+                Self::print_augmented_code_chunk(b, 1, None, None);
             } else {
                 println!("no such buffer")
             }
@@ -575,40 +579,25 @@ impl DebuggerFrontend {
                 }
             }
 
-            SrcCommands::Show { spec, window, cursor } => {
+            SrcCommands::Show { window } => {
+                let read_lock = self.last_event.read().unwrap();
+                let spec = match &*read_lock {
+                    b @ BrkSpec { file: Some(_), func: Some(_), line: None | Some(_) }
+                    | b @ BrkSpec { file: Some(_), func: None, line: Some(_) } => b,
+                    _ => return println!("not enough events received")
+                };
+
+                self.find_sources(spec, window, spec.line.map(|l| l as usize));
+            }
+
+            SrcCommands::Find { spec, window } => {
+                
                 let spec = match BrkSpec::parse(&spec) {
                     Ok(s) => s,
                     Err(_) => return println!("failed to parse path"),
                 };
 
-                let (multi, first): (bool, Option<(BrkSpec, &str)>) = self.srcs.find(&spec)
-                    .fold((false, None), |(multiple_match, first), m| {
-                        match first {
-                            // Second match, take first match out and print their paths
-                            Some(f) => {
-                                println!("multiple matches found, add more constraints to get what you want");
-                                println!("{}", f.0);
-                                println!("{}", m.0);
-                                (true, None)
-                            },
-                            // Third+ match, print path
-                            None if multiple_match => {
-                                println!("{}", m.0);
-                                (true, None)
-                            }
-                            // First match, send to next iteration
-                            None => (false, Some(m)),
-                        }
-                    });
-
-                match (multi, first) {
-                    (false, None) => println!("nothing matches the definition"),
-                    (false, Some((path, chunk))) => {
-                        println!("{path}:");
-                        Self::print_augmented_code_chunk(chunk, path.line.unwrap() as usize, cursor, window);
-                    },
-                    _ => ()
-                }
+                self.find_sources(&spec, window, None);
             }
 
             SrcCommands::List { files } => {
@@ -618,6 +607,38 @@ impl DebuggerFrontend {
                     self.srcs.dirs().list_items()
                 }
             }
+        }
+    }
+
+    /// Search for sources and print results
+    fn find_sources(&self, spec: &BrkSpec, window: Option<usize>, cursor: Option<usize>) {
+        let (multi, first): (bool, Option<(BrkSpec, &str)>) = self.srcs.find(spec)
+            .fold((false, None), |(multiple_match, first), m| {
+                match first {
+                    // Second match, take first match out and print their paths
+                    Some(f) => {
+                        println!("multiple matches found, add more constraints to get what you want");
+                        println!("{}", f.0);
+                        println!("{}", m.0);
+                        (true, None)
+                    },
+                    // Third+ match, print path
+                    None if multiple_match => {
+                        println!("{}", m.0);
+                        (true, None)
+                    }
+                    // First match, send to next iteration
+                    None => (false, Some(m)),
+                }
+            });
+
+        match (multi, first) {
+            (false, None) => println!("nothing matches the definition: {spec}"),
+            (false, Some((path, chunk))) => {
+                println!("{path}:");
+                Self::print_augmented_code_chunk(chunk, path.line.unwrap() as usize, cursor, window);
+            },
+            _ => ()
         }
     }
 
@@ -670,9 +691,12 @@ impl DebuggerFrontend {
 
             Commands::Load { file } => 
             match Self::load(file.as_deref().unwrap_or(DEFAULT_STATE_FILENAME)) {
-                Ok(SavedState { buffers, breakpoints }) => {
+                Ok(SavedState { buffers, breakpoints, src_dirs }) => {
                     self.buffers = buffers;
                     dbg.set_breakpoints(breakpoints);
+                    for (path, prefix) in src_dirs {
+                        self.manipulate_sources(SrcCommands::Add { path, prefix })
+                    }
                 },
                 Err(e) => println!("Failed to load state: {e}"),
             },
@@ -680,7 +704,10 @@ impl DebuggerFrontend {
             Commands::Save { file } => {
                 let state = SavedState { 
                     buffers: self.buffers.clone(),
-                    breakpoints: dbg.breakpoints().clone()
+                    breakpoints: dbg.breakpoints().clone(),
+                    src_dirs: self.srcs.dirs().iter()
+                        .map(|d| (d.path.clone(), d.prefix.clone()))
+                        .collect(),
                 };
 
                 if let Err(e) = Self::save(state, file.as_deref().unwrap_or(DEFAULT_STATE_FILENAME)) {
@@ -792,7 +819,7 @@ impl DebuggerFrontend {
         let recv = middleware.event_rx().clone();
         let shared_dbg = Arc::new(Mutex::new(middleware));
         let shared_dbg_ctrlc = shared_dbg.clone();
-        
+
         // Set ctrl+c handler to stop execution        
         ctrlc::set_handler(move || {
             let dbg = shared_dbg_ctrlc.lock().unwrap();
@@ -803,7 +830,8 @@ impl DebuggerFrontend {
             }
         }).expect("failed to set ctrl+c handler");
 
-        
+        let last_event = Arc::new(RwLock::new(BrkSpec::default()));
+        let last_event_shared = last_event.clone();
         // Debugger frontend thread
         std::thread::spawn(move || {
             let mut front = Self { 
@@ -811,6 +839,7 @@ impl DebuggerFrontend {
                 buffers: ScriptBuffers::new(),
                 during_eval: false,
                 srcs: SourceDB::new(),
+                last_event: last_event_shared
             };
             
             let mut arg_str = String::new();
@@ -846,6 +875,13 @@ impl DebuggerFrontend {
                     println!("Reached debugger breakpoint {}", bp.number);
                 }
                 println!("{e}");
+                // TODO: Optimize lock usage
+                let mut write_lock = last_event.write().unwrap();
+                match e.event {
+                    DebugEvent::Line(l) => write_lock.line = Some(l as SqUnsignedInteger),
+                    DebugEvent::FnCall(..) => *write_lock = e.into(),
+                    DebugEvent::FnRet(_, l) => write_lock.line = l.map(|l| l as SqUnsignedInteger),
+                }
             }
         }   
     }
@@ -1013,10 +1049,57 @@ enum SqBrkSpecToken<'lex> {
     Error,
 }
 
+#[derive(Default)]
 struct BrkSpec {
     file: Option<String>,
     func: Option<String>,
     line: Option<SqUnsignedInteger>,
+}
+
+// TODO: Map SqUnsignedInteger and SqInteger to usize and isize
+impl From<dbg::SqBreakpoint> for BrkSpec {
+    fn from(value: dbg::SqBreakpoint) -> Self {
+        Self {
+            file: value.src_file,
+            func: value.fn_name,
+            line: value.line.map(|l| l as SqUnsignedInteger),
+        }
+    }
+}
+
+impl From<BrkSpec> for dbg::SqBreakpoint {
+    fn from(value: BrkSpec) -> Self {
+        Self {
+            line: value.line.map(|l| l as SqInteger),
+            fn_name: value.func,
+            src_file: value.file,
+            ..Self::new()
+        }
+    }
+}
+
+impl From<DebugEventWithSrc> for BrkSpec {
+    fn from(value: DebugEventWithSrc) -> Self {
+        match value.event {
+            DebugEvent::Line(ln) => Self {
+                file: value.src,
+                func: None,
+                line: Some(ln as SqUnsignedInteger),
+            },
+            DebugEvent::FnCall(func, ln) => Self {
+                // Actually this event's line is not a function definition,
+                // but the first function statement
+                line: ln.map(|l| l as SqUnsignedInteger),
+                file: value.src,
+                func: Some(func),
+            },
+            DebugEvent::FnRet(func, ln) => Self {
+                file: value.src,
+                func: Some(func),
+                line: ln.map(|l| l as SqUnsignedInteger),
+            }
+        }
+    }
 }
 
 impl std::fmt::Display for BrkSpec {
@@ -1360,7 +1443,7 @@ impl SourceDB {
                     })
                     // Filter by line number
                     .filter(|it| if let Some(line) = &spec.line {
-                        it.lines.start == *line as usize
+                        it.lines.contains(&(*line as usize))
                     } else { true })
                     .map(move |it| (file.clone(), it))                
             })
