@@ -575,16 +575,39 @@ impl DebuggerFrontend {
                 }
             }
 
-            // TODO: print error if mutliple spec matches found
             SrcCommands::Show { spec, window, cursor } => {
                 let spec = match BrkSpec::parse(&spec) {
                     Ok(s) => s,
                     Err(_) => return println!("failed to parse path"),
                 };
 
-                for (path, chunk) in self.srcs.find(&spec) {
-                    println!("{path}:");
-                    Self::print_augmented_code_chunk(chunk, path.line.unwrap() as usize, cursor, window);
+                let (multi, first): (bool, Option<(BrkSpec, &str)>) = self.srcs.find(&spec)
+                    .fold((false, None), |(multiple_match, first), m| {
+                        match first {
+                            // Second match, take first match out and print their paths
+                            Some(f) => {
+                                println!("multiple matches found, add more constraints to get what you want");
+                                println!("{}", f.0);
+                                println!("{}", m.0);
+                                (true, None)
+                            },
+                            // Third+ match, print path
+                            None if multiple_match => {
+                                println!("{}", m.0);
+                                (true, None)
+                            }
+                            // First match, send to next iteration
+                            None => (false, Some(m)),
+                        }
+                    });
+
+                match (multi, first) {
+                    (false, None) => println!("nothing matches the definition"),
+                    (false, Some((path, chunk))) => {
+                        println!("{path}:");
+                        Self::print_augmented_code_chunk(chunk, path.line.unwrap() as usize, cursor, window);
+                    },
+                    _ => ()
                 }
             }
 
@@ -719,7 +742,6 @@ impl DebuggerFrontend {
             },
             None => 0..lines_cnt,
         };
-        dbg!(&window);
         // Lines will be dedented by first line indentation count 
         let indent = chunk.chars().take_while(|&c| c == ' ' || c == '\t').count();
         let indent_pat = &chunk[..indent];
