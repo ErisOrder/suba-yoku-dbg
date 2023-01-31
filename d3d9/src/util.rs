@@ -55,7 +55,8 @@ enum SrcCommands {
     #[clap(visible_alias = "s")]
     Show {
         /// Constrain displayed lines count
-        window: Option<usize>,
+        #[clap(default_value = "25")]
+        window: usize,
     },
 
     /// Display specified function source.
@@ -67,7 +68,8 @@ enum SrcCommands {
         spec: String,
 
         /// Constrain displayed lines count
-        window: Option<usize>,
+        #[clap(default_value = "25")]
+        window: usize,
     },
 
     /// List all sources directories
@@ -587,7 +589,7 @@ impl DebuggerFrontend {
                     _ => return println!("not enough events received")
                 };
 
-                self.find_sources(spec, window, spec.line.map(|l| l as usize));
+                self.find_sources(spec, Some(window), spec.line.map(|l| l as usize));
             }
 
             SrcCommands::Find { spec, window } => {
@@ -597,7 +599,7 @@ impl DebuggerFrontend {
                     Err(_) => return println!("failed to parse path"),
                 };
 
-                self.find_sources(&spec, window, None);
+                self.find_sources(&spec, Some(window), spec.line.map(|l| l as usize));
             }
 
             SrcCommands::List { files } => {
@@ -878,9 +880,16 @@ impl DebuggerFrontend {
                 // TODO: Optimize lock usage
                 let mut write_lock = last_event.write().unwrap();
                 match e.event {
-                    DebugEvent::Line(l) => write_lock.line = Some(l as SqUnsignedInteger),
+                    DebugEvent::Line(l) => {
+                        write_lock.line = Some(l as SqUnsignedInteger);
+                        write_lock.file = e.src;
+                    },
                     DebugEvent::FnCall(..) => *write_lock = e.into(),
-                    DebugEvent::FnRet(_, l) => write_lock.line = l.map(|l| l as SqUnsignedInteger),
+                    DebugEvent::FnRet(_, l) => {
+                        write_lock.line = l.map(|l| l as SqUnsignedInteger);
+                        write_lock.file = None;
+                        write_lock.func = None;
+                    },
                 }
             }
         }   
@@ -1330,6 +1339,14 @@ impl SqFileParser {
         if open_braces > 0 {
             bail!("Unmatched brace found, try to compile file to get more useful error");
         }
+
+        // Special case for root function
+        items.push(SqSrcItem {
+            item: SqItem::Func(SqFunc { name: "main".into(), class: None }), 
+            lines: 1..file.lines().count(),
+            span: 0..file.len()
+        });
+        
         Ok(items)
     }
 
@@ -1446,6 +1463,21 @@ impl SourceDB {
                         it.lines.contains(&(*line as usize))
                     } else { true })
                     .map(move |it| (file.clone(), it))                
+            })
+            // Scan function that is not root of file was in output.
+            // The "main" function being added at the end of file parsing,
+            // so should appear after all normal functions.
+            // If there was no such function, to which specified line belongs,
+            // "main" will be the only output
+            .scan(false, |was_non_main, (file, it)| {
+                if !matches!(&it.item, SqItem::Func(f) if f.name == "main") {
+                    *was_non_main = true;
+                    Some((file, it))
+                } else if *was_non_main {
+                    None
+                } else {
+                    Some((file, it))
+                }
             })
             // Extract item path and slice
             .map(|(file, it)| (
