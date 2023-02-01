@@ -1,12 +1,12 @@
 use super::api::{self, VmRawApi};
 
 
-// Vm safety
+/// Vm safety
 pub mod safety {
     use super::api::VmRawApi;
         
-    // Vm drop specialization helper trait
-    pub(super) trait VmDrop where Self: Sized {
+    /// Vm drop specialization helper trait
+    pub trait VmDrop where Self: Sized {
         fn drop_vm(vm: &mut super::Vm<Self>);
     }
 
@@ -35,7 +35,7 @@ pub mod safety {
 }
 
 /// Struct for accessing raw api methods of the vm
-struct VmApi(api::HSQUIRRELVM);
+pub struct VmApi(api::HSQUIRRELVM);
 
 impl api::VmRawApi for VmApi {
     fn handle(&self) -> squirrel2_kaleido_rs::HSQUIRRELVM {
@@ -49,7 +49,7 @@ impl<S> Drop for Vm<S> where S: safety::VmDrop {
     }
 } 
 
-struct Vm<S> where S: safety::VmDrop  {
+pub struct Vm<S> where S: safety::VmDrop  {
     api: VmApi,
     safety: S
 }
