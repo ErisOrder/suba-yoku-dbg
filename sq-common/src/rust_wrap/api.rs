@@ -1,5 +1,34 @@
 pub use squirrel2_kaleido_rs::*;
 
+// Some re-exports to override SQIntegers as *size (they're always 32/64 anyways)
+pub type SQInteger = isize;
+pub type SQUnsignedInteger = usize;
+
+pub type SQRESULT = SQInteger;
+pub type SQBOOL = SQUnsignedInteger;
+
+pub type SQCOMPILERERROR = Option<SqCompilerErrorHandler>;
+pub type SQFUNCTION = Option<SqFunction>;
+pub type SQRELEASEHOOK = Option<SqReleaseHook>;
+
+/// Squirrel native closure underlying function
+pub type SqFunction = extern "C" fn(vm: HSQUIRRELVM) -> SQInteger;
+
+/// Hook that will be called on userdata release
+pub type SqReleaseHook = extern "C" fn(
+    p: SQUserPointer,
+    size: SQInteger
+) -> SQInteger;
+
+/// Error handler that will be called in case of compiler error
+pub type SqCompilerErrorHandler = extern "C" fn(
+    vm: HSQUIRRELVM,
+    desc: *const i8,
+    src: *const i8,
+    line: SQInteger,
+    column: SQInteger,
+);
+
 /// Generate methods for vm api trait
 macro_rules! to_method {
     // Custom name
@@ -8,7 +37,7 @@ macro_rules! to_method {
         $( #[$meta] )*
         #[inline]
         unsafe fn $new_name(&self $(,$arg:$arg_type)* ) $( -> $ret )? {
-            $name(self.handle() $(,$arg  as _)* )
+            $name(self.handle() $(,$arg  as _)* ) as _
         }
         )+
     };
@@ -19,7 +48,7 @@ macro_rules! to_method {
         #[inline]
         fn $new_name(&self $(,$arg:$arg_type)* ) $( -> $ret )? {
             // allow arbitrary implicit conversions
-            unsafe { $name(self.handle() $(,$arg as _)* ) }
+            unsafe { $name(self.handle() $(,$arg as _)* ) as _ }
         }
         )+
     };
@@ -29,7 +58,8 @@ macro_rules! to_method {
         $( #[$meta] )*
         #[inline]
         unsafe fn $name(&self $(,$arg:$arg_type)* ) $( -> $ret )? {
-            concat_idents!(sq_, $name)(self.handle() $(,$arg)* )
+            //                                      Just to translate function types
+            concat_idents!(sq_, $name)(self.handle() $(,std::mem::transmute($arg))* ) as _
         }
         )+
     };
@@ -42,7 +72,7 @@ pub trait VmRawApi {
     
     // Special case
     unsafe fn move_object(&self, dest: HSQUIRRELVM, idx: SQInteger) {
-        sq_move(dest, self.handle(), idx)
+        sq_move(dest, self.handle(), idx as _)
     }
 
     // Safe renamed methods

@@ -14,15 +14,18 @@ pub type SqFnClosure = dyn FnMut(&vm::Vm<vm::safety::Friend>) -> SqInteger + Sen
 
 pub type SqBoxedClosure = Box<SqFnClosure>;
 
-/// For naming consistency
-pub type SqInteger = isize;
+/// Temporary re-export
+pub type SqInteger = SQInteger;
 
 /// For naming consistency
-pub type SqUnsignedInteger = usize;
+pub type SqUnsignedInteger = SQUnsignedInteger;
 
 pub type SqUserPointer<T> = *mut T;
 
 pub type SqFloat = SQFloat;
+
+/// Squirrel associative container
+pub type SqTable = IndexMap<DynSqVar, DynSqVar>;
 
 /// Rust-adapted SQObjectType enum
 #[derive(Copy, Clone, PartialEq, PartialOrd, Eq, Ord, Debug, Hash)]
@@ -142,9 +145,6 @@ impl From<Vec<u8>> for SqUserData {
         SqUserData(value)
     }
 }
-
-/// Squirrel associative container
-pub type SqTable = IndexMap<DynSqVar, DynSqVar>;
 
 /// Squirrel class isntance
 #[derive(Clone, Debug)]
