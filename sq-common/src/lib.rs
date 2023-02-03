@@ -3,6 +3,7 @@
 #![feature(concat_idents)]
 
 mod rust_wrap;
+mod util;
 pub mod raw_api;
 pub mod dbg;
 pub mod error;

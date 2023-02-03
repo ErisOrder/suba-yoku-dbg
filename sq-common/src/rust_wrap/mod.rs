@@ -12,6 +12,9 @@ set_sqfn_paths!(sq_wrap_path = "self");
 mod vm;
 mod api; 
 mod types;
+mod get;
+mod push;
+mod obj;
 
 /// Re-export
 pub use crate::raw_api as raw_api;

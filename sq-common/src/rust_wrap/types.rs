@@ -8,6 +8,8 @@ use bitflags::bitflags;
 
 use super::api::*;
 use super::vm;
+use super::vm::Vm;
+use super::vm::safety::VmDrop;
 
 /// Safe abstraction for SQFn
 pub type SqFnClosure = dyn FnMut(&vm::Vm<vm::safety::Friend>) -> SqInteger + Send; 
@@ -392,8 +394,3 @@ impl Hash for DynSqVar {
 /// that return value is on stack top, allowing to push it manually. 
 pub struct SqUnit;
 
-/// Strong reference to squirrel vm object with RAII
-pub struct SqObjectRef<'vm, S> where S: vm::safety::VmDrop {
-    obj: SQObject,
-    vm: &'vm vm::Vm<S>
-}
