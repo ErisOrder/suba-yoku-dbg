@@ -69,12 +69,16 @@ macro_rules! to_method {
 pub trait VmRawApi {
     /// Expose handle to underlying VM
     fn handle(&self) -> HSQUIRRELVM;
+
+    fn open(initial_stack_size: SQInteger) -> HSQUIRRELVM {
+        unsafe { sq_open(initial_stack_size as _) }
+    }
     
     // Special case
     unsafe fn move_object(&self, dest: HSQUIRRELVM, idx: SQInteger) {
         sq_move(dest, self.handle(), idx as _)
     }
-
+    
     // Safe renamed methods
     to_method! {
         /// Pops `count` elements from the stack

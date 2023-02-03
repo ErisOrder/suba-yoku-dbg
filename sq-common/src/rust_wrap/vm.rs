@@ -195,6 +195,7 @@ impl<S> Vm<S> where S: safety::VmDrop {
             1.. => Ordering::Greater,
             0 => Ordering::Equal,
             ..=-1 => Ordering::Less,
+            _ => unreachable!()
         }
     }
 
@@ -410,7 +411,8 @@ impl<S> Vm<S> where S: safety::VmDrop {
     /// Sets a `hook` that will be called before release of __userdata__ at position `idx`
     #[inline]
     fn set_release_hook(&self, idx: SqInteger, hook: SqReleaseHook) -> SqVmResult<()> {
-        sq_validate!(self.get_type(idx), SqType::UserData)?;
+        // FIXME: Uncomment after
+        // sq_validate!(self.get_type(idx), SqType::UserData)?;
         unsafe { self.api().setreleasehook(idx, Some(hook)) };
         Ok(())
     }
@@ -478,6 +480,17 @@ impl<S> Vm<S> where S: safety::VmDrop {
     // }    
 }
 
+impl Vm<safety::Safe> {
+    /// Creates a new instance of a squirrel VM that consists in a new execution stack.
+    pub fn open(initial_stack_size: SqInteger) -> Self {
+        let handle = VmApi::open(initial_stack_size);
+        Self {
+            api: VmApi(handle),
+            safety: safety::Safe
+        }
+    }
+}
+
 impl Vm<safety::Unsafe> {
     /// Close this vm and all friend vms
     pub fn close(self) {
@@ -498,8 +511,11 @@ impl Vm<safety::Unsafe> {
     /// Transform into Safe VM.
     /// Safe Vm will be closed on drop
     pub unsafe fn into_safe(self) -> Vm<safety::Safe> {
+        // Reconstruct vm from handle, without running destructor
+        let handle = self.api().handle();        
+        std::mem::forget(self);
         Vm {
-            api: self.api,
+            api: VmApi(handle),
             safety: safety::Safe,
         }
     }
@@ -508,8 +524,11 @@ impl Vm<safety::Unsafe> {
     /// # Safety
     /// Friend Vm __cannot__ be closed
     pub unsafe fn into_friend(self) -> Vm<safety::Friend> {
+        // Reconstruct vm from handle, without running destructor
+        let handle = self.api().handle();        
+        std::mem::forget(self);
         Vm {
-            api: self.api,
+            api: VmApi(handle),
             safety: safety::Friend,
         }
     }
