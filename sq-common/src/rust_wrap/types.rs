@@ -8,8 +8,6 @@ use bitflags::bitflags;
 
 use super::api::*;
 use super::vm;
-use super::vm::Vm;
-use super::vm::safety::VmDrop;
 
 /// Safe abstraction for SQFn
 pub type SqFnClosure = dyn FnMut(&vm::Vm<vm::safety::Friend>) -> SqInteger + Send; 
@@ -156,15 +154,15 @@ pub struct SqInstance {
 
 #[derive(Clone, Debug)]
 pub struct SqClosureInfo {
-    name: Option<String>,
-    args: Vec<String>,
-    src: Option<String>,
+    pub name: Option<String>,
+    pub args: Vec<String>,
+    pub src: Option<String>,
 }
 
 #[derive(Clone, Debug)]
 pub struct SqNativeClosureInfo {
-    name: Option<String>,
-    arg_types: Vec<SqTypedArgMask>,
+    pub name: Option<String>,
+    pub arg_types: Vec<SqTypedArgMask>,
 }
 
 #[derive(Copy, Clone, PartialEq, PartialOrd, Eq, Ord, Debug, Hash)]

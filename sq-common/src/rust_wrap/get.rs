@@ -152,10 +152,9 @@ where
 
         let mut out = vec![];
 
-        // FIXME: Uncomment later
-        // for elem in self.iter_array(idx, max_depth) {
-        //     out.push(elem?);
-        // }
+        for elem in self.iter_array(idx, max_depth) {
+            out.push(elem?);
+        }
 
         Ok(out)
     }
@@ -181,15 +180,14 @@ where
 
         let mut out = IndexMap::new();
 
-        // FIXME: Uncomment later
-        // for pair in self.iter_table(idx, max_depth) {
-        //     match pair {
-        //         Ok((k, v)) => {
-        //             out.insert(k, v);
-        //         },
-        //         Err(e) => return Err(e),
-        //     } 
-        // }
+        for pair in self.iter_table(idx, max_depth) {
+            match pair {
+                Ok((k, v)) => {
+                    out.insert(k, v);
+                },
+                Err(e) => return Err(e),
+            } 
+        }
 
         Ok(out)
     }
@@ -237,29 +235,28 @@ impl<S> SqGet<SqClosureInfo> for Vm<S> where S: VmDrop {
         self.get_closure_info(idx)
             .map_err(|e| e.into_stack_error("failed to get closure info"))?;
 
-        // FIXME: Uncomment later
         // Parameters are 1d array of strings
-        // for pair in self.iter_table(-1, Some(2)) {
-        //     let (key, val): (String, DynSqVar) = match pair {
-        //         Ok(kv) => kv,
-        //         Err(e) => return Err(e),
-        //     };
-        //     match key.as_str() {
-        //         "name" => if let DynSqVar::String(n) = val {
-        //             info.name = Some(n);
-        //         },
-        //         "parameters" => if let DynSqVar::Array(v) = val {
-        //             for arg in v {
-        //                 let DynSqVar::String(arg) = arg else { unreachable!() };
-        //                 info.args.push(arg)
-        //             }
-        //         }
-        //         "src" => if let DynSqVar::String(n_src) = val {
-        //             info.src = Some(n_src)
-        //         }
-        //         _ => ()
-        //     }
-        // }
+        for pair in self.iter_table(-1, Some(2)) {
+            let (key, val): (String, DynSqVar) = match pair {
+                Ok(kv) => kv,
+                Err(e) => return Err(e),
+            };
+            match key.as_str() {
+                "name" => if let DynSqVar::String(n) = val {
+                    info.name = Some(n);
+                },
+                "parameters" => if let DynSqVar::Array(v) = val {
+                    for arg in v {
+                        let DynSqVar::String(arg) = arg else { unreachable!() };
+                        info.args.push(arg)
+                    }
+                }
+                "src" => if let DynSqVar::String(n_src) = val {
+                    info.src = Some(n_src)
+                }
+                _ => ()
+            }
+        }
 
         // Pop closure info
         self.pop(1);
@@ -275,37 +272,36 @@ impl<S> SqGet<SqNativeClosureInfo> for Vm<S> where S: VmDrop {
         self.get_closure_info(idx)
             .map_err(|e| e.into_stack_error("failed to get native closure info"))?;
 
-        // FIXME: Uncomment later
         // Argument types are 1d array of integers
-        // for pair in self.iter_table(-1, Some(2)) {
-        //     let (key, val): (String, DynSqVar) = match pair {
-        //         Ok(kv) => kv,
-        //         Err(e) => return Err(e),
-        //     };
-        //     match key.as_str() {
-        //         "name" => if let DynSqVar::String(n) = val {
-        //             info.name = Some(n);
-        //         },
-        //         // Fill vector with Any to represent untyped argument
-        //         "paramscheck" => if let DynSqVar::Integer(nparams) = val {
-        //             for _ in 0..nparams {
-        //                 info.arg_types.push(SqTypedArgMask::Any);
-        //             }
-        //         }
-        //         "typecheck" => if let DynSqVar::Array(v) = val {
-        //             for (idx, mask) in v.into_iter().enumerate() {
-        //                 let DynSqVar::Integer(mask) = mask else { unreachable!() };
-        //                 let mask = SqTypedArgMask::from_bits_truncate(mask as u32);
-        //                 if idx >= info.arg_types.len() {
-        //                     info.arg_types.push(mask)
-        //                 } else {
-        //                     info.arg_types[idx] = mask; 
-        //                 }
-        //             }
-        //         }
-        //         _ => ()
-        //     }
-        // }
+        for pair in self.iter_table(-1, Some(2)) {
+            let (key, val): (String, DynSqVar) = match pair {
+                Ok(kv) => kv,
+                Err(e) => return Err(e),
+            };
+            match key.as_str() {
+                "name" => if let DynSqVar::String(n) = val {
+                    info.name = Some(n);
+                },
+                // Fill vector with Any to represent untyped argument
+                "paramscheck" => if let DynSqVar::Integer(nparams) = val {
+                    for _ in 0..nparams {
+                        info.arg_types.push(SqTypedArgMask::Any);
+                    }
+                }
+                "typecheck" => if let DynSqVar::Array(v) = val {
+                    for (idx, mask) in v.into_iter().enumerate() {
+                        let DynSqVar::Integer(mask) = mask else { unreachable!() };
+                        let mask = SqTypedArgMask::from_bits_truncate(mask as u32);
+                        if idx >= info.arg_types.len() {
+                            info.arg_types.push(mask)
+                        } else {
+                            info.arg_types[idx] = mask; 
+                        }
+                    }
+                }
+                _ => ()
+            }
+        }
 
         // Pop closure info
         self.pop(1);

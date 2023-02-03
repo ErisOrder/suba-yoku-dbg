@@ -15,6 +15,7 @@ mod types;
 mod get;
 mod push;
 mod obj;
+mod iter;
 
 /// Re-export
 pub use crate::raw_api as raw_api;

@@ -1,12 +1,16 @@
 use std::cmp::Ordering;
+use std::marker::PhantomData;
 use std::ptr::{addr_of_mut, addr_of};
+use delegate::delegate;
 
 use super::api::{
     self, VmRawApi, SQ_ERROR, SqCompilerErrorHandler, 
     SqFunction, SqReleaseHook, SQObject, sq_resetobject
 };
+use super::iter::{SqArrayIter, SqTableIter};
 use super::types::*;
 use crate::{error::*, sq_validate};
+
 
 /// Strongly-typed vm errors
 macro_rules! sq_try {
@@ -200,12 +204,6 @@ impl<S> Vm<S> where S: safety::VmDrop {
             ..=-1 => Ordering::Less,
             _ => unreachable!()
         }
-    }
-
-    /// Get the type of the value at the position `idx` in the stack
-    #[inline]
-    pub fn get_type(&self, idx: SqInteger) -> SqType {
-        self.api().get_obj_type(idx).into()
     }
 
     /// Creates a new array and pushes it into the stack.
@@ -486,6 +484,45 @@ impl<S> Vm<S> where S: safety::VmDrop {
         let mut stub_wtf: SQObject = unsafe { std::mem::zeroed() };
         stub_wtf._type = addr_of!(*obj) as _;
         unsafe { self.api().pushobject(stub_wtf) }
+    }
+
+    // TODO: Add some lock during iteration
+    /// Get rust iterator to squirrel array at index `idx`
+    pub fn iter_array<T>(
+        &self,
+        idx: SqInteger,
+        max_depth: Option<u32>
+    ) -> SqArrayIter<'_, S, T> {
+        // Push a reference to an array to the stack top and a null iterator
+        self.ref_idx(idx);
+        self.api().push_null();
+
+        SqArrayIter { vm: self, max_depth, _type: PhantomData }
+    }
+
+    /// Get rust iterator to squirrel table at index `idx`
+    pub fn iter_table<K, V>(
+        &self,
+        idx: SqInteger,
+        max_depth: Option<u32>
+    ) -> SqTableIter<'_, S, K, V> {
+        // Push a reference to an array to the stack top and a null iterator
+        self.ref_idx(idx);
+        self.api().push_null();
+
+        SqTableIter { vm: self, max_depth, _type: PhantomData }
+    }
+
+    // TODO: Make more api methods delegated through this macro
+    delegate! {
+        to self.api() {
+            /// Get the type of the value at the position `idx` in the stack
+            #[into]
+            #[call(get_obj_type)]
+            pub fn get_type(&self, idx: SqInteger) -> SqType;
+            pub fn pop(&self, count: SqInteger);
+            pub fn ref_idx(&self, idx: SqInteger);
+        }
     }    
 }
 

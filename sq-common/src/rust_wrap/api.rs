@@ -66,6 +66,7 @@ macro_rules! to_method {
 }
 
 /// Just a raw vm api wrapped into trait
+#[allow(clippy::useless_transmute)]
 pub trait VmRawApi {
     /// Expose handle to underlying VM
     fn handle(&self) -> HSQUIRRELVM;
