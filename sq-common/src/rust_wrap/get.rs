@@ -28,7 +28,7 @@ pub trait SqGet<T> {
     /// Limit containers' recursion with `max_depth`.
     /// 
     /// This method mainly exists to prevent eternal recursion of self-referential containers.
-    fn get_constrain(&self, idx: SqInteger, max_depth: Option<u32>) -> SqGetResult<T>;
+    fn get_constrain(&self, idx: SqInteger, max_depth: Option<SqUnsignedInteger>) -> SqGetResult<T>;
      
     /// Get value from the vm stack at position `idx`
     /// 
@@ -41,14 +41,14 @@ pub trait SqGet<T> {
 }
 
 impl<S> SqGet<SqUnit> for Vm<S> where S: VmDrop {
-    fn get_constrain(&self, _: SqInteger, _: Option<u32>) -> SqGetResult<SqUnit> {
+    fn get_constrain(&self, _: SqInteger, _: Option<SqUnsignedInteger>) -> SqGetResult<SqUnit> {
         Ok(SqUnit)
     }
 }
 
 impl<S> SqGet<SqNull> for Vm<S> where S: VmDrop {
     #[inline]
-    fn get_constrain(&self, idx: SqInteger, _: Option<u32>) -> SqGetResult<SqNull> {
+    fn get_constrain(&self, idx: SqInteger, _: Option<SqUnsignedInteger>) -> SqGetResult<SqNull> {
         sq_validate!(self.get_type(idx), SqType::Null)
             .map_err(|e| e.into_stack_error("failed to get null"))?;
         Ok(SqNull)
@@ -57,7 +57,7 @@ impl<S> SqGet<SqNull> for Vm<S> where S: VmDrop {
 
 impl<S> SqGet<bool> for Vm<S> where S: VmDrop {
     #[inline]
-    fn get_constrain(&self, idx: SqInteger, _: Option<u32>) -> SqGetResult<bool> {
+    fn get_constrain(&self, idx: SqInteger, _: Option<SqUnsignedInteger>) -> SqGetResult<bool> {
         sq_validate!(self.get_type(idx), SqType::Bool)
             .map_err(|e| e.into_stack_error("failed to get bool"))?;
         Ok(self.get_bool(idx).unwrap())
@@ -66,7 +66,7 @@ impl<S> SqGet<bool> for Vm<S> where S: VmDrop {
 
 impl<S> SqGet<SqInteger> for Vm<S> where S: VmDrop {
     #[inline]
-    fn get_constrain(&self, idx: SqInteger, _: Option<u32>) -> SqGetResult<SqInteger> {
+    fn get_constrain(&self, idx: SqInteger, _: Option<SqUnsignedInteger>) -> SqGetResult<SqInteger> {
         sq_validate!(self.get_type(idx), SqType::Integer)
             .map_err(|e| e.into_stack_error("failed to get integer"))?;
         Ok(self.get_integer(idx).unwrap())
@@ -75,7 +75,7 @@ impl<S> SqGet<SqInteger> for Vm<S> where S: VmDrop {
 
 impl<S> SqGet<SqFloat> for Vm<S> where S: VmDrop {
     #[inline]
-    fn get_constrain(&self, idx: SqInteger, _: Option<u32>) -> SqGetResult<SqFloat> {
+    fn get_constrain(&self, idx: SqInteger, _: Option<SqUnsignedInteger>) -> SqGetResult<SqFloat> {
         sq_validate!(self.get_type(idx), SqType::Float)
             .map_err(|e| e.into_stack_error("failed to get float"))?;
         Ok(self.get_float(idx).unwrap())
@@ -83,7 +83,7 @@ impl<S> SqGet<SqFloat> for Vm<S> where S: VmDrop {
 }
 
 impl<S, T> SqGet<SqUserPointer<T>> for Vm<S> where S: VmDrop {
-    fn get_constrain(&self, idx: SqInteger, _: Option<u32>) -> SqGetResult<SqUserPointer<T>> {
+    fn get_constrain(&self, idx: SqInteger, _: Option<SqUnsignedInteger>) -> SqGetResult<SqUserPointer<T>> {
         sq_validate!(self.get_type(idx), SqType::UserPointer)
             .map_err(|e| e.into_stack_error("failed to get userpointer"))?;
         
@@ -94,7 +94,7 @@ impl<S, T> SqGet<SqUserPointer<T>> for Vm<S> where S: VmDrop {
 // TODO: Check encoding
 // TODO: Use get_size() to make this more safe
 impl<S> SqGet<String> for Vm<S> where S: VmDrop {
-    fn get_constrain(&self, idx: SqInteger, _: Option<u32>) -> SqGetResult<String> {
+    fn get_constrain(&self, idx: SqInteger, _: Option<SqUnsignedInteger>) -> SqGetResult<String> {
         sq_validate!(self.get_type(idx), SqType::String)
             .map_err(|e| e.into_stack_error("failed to get string"))?;
         unsafe {
@@ -105,7 +105,7 @@ impl<S> SqGet<String> for Vm<S> where S: VmDrop {
 }
 
 impl<S> SqGet<SqUserData> for Vm<S> where S: VmDrop {
-    fn get_constrain(&self, idx: SqInteger, _: Option<u32>) -> SqGetResult<SqUserData> {
+    fn get_constrain(&self, idx: SqInteger, _: Option<SqUnsignedInteger>) -> SqGetResult<SqUserData> {
         sq_validate!(self.get_type(idx), SqType::UserData)
             .map_err(|e| e.into_stack_error("failed to get userdata"))?;
         
@@ -129,7 +129,7 @@ where
     S: VmDrop,
     Vm<S>: SqGet<T> 
 {
-    fn get_constrain(&self, idx: SqInteger, max_depth: Option<u32>) -> SqGetResult<Option<T>> {
+    fn get_constrain(&self, idx: SqInteger, max_depth: Option<SqUnsignedInteger>) -> SqGetResult<Option<T>> {
         match self.get_type(idx) {
             SqType::Null => Ok(None),
             _ => Ok(Some(SqGet::<T>::get_constrain(self, idx, max_depth)?))
@@ -142,7 +142,7 @@ where
     S: VmDrop,
     Vm<S>: SqGet<T> 
 {
-    fn get_constrain(&self, idx: SqInteger, max_depth: Option<u32>) -> SqGetResult<Vec<T>> {
+    fn get_constrain(&self, idx: SqInteger, max_depth: Option<SqUnsignedInteger>) -> SqGetResult<Vec<T>> {
         sq_validate!(self.get_type(idx), SqType::Array)
             .map_err(|e| e.into_stack_error("failed to get array"))?;
         
@@ -169,7 +169,7 @@ where
     fn get_constrain(
         &self,
         idx: SqInteger, 
-        max_depth: Option<u32>
+        max_depth: Option<SqUnsignedInteger>
     ) -> SqGetResult<IndexMap<K, V>> {
         sq_validate!(self.get_type(idx), SqType::Table, SqType::Class)
             .map_err(|e| e.into_stack_error("failed to get table"))?;
@@ -194,7 +194,7 @@ where
 }
 
 impl<S> SqGet<SqInstance> for Vm<S> where S: VmDrop {
-    fn get_constrain(&self, idx: SqInteger, max_depth: Option<u32>) -> SqGetResult<SqInstance> {
+    fn get_constrain(&self, idx: SqInteger, max_depth: Option<SqUnsignedInteger>) -> SqGetResult<SqInstance> {
         sq_validate!(self.get_type(idx), SqType::Instance)
             .map_err(|e| e.into_stack_error("failed to get instance"))?;
         
@@ -229,7 +229,7 @@ impl<S> SqGet<SqInstance> for Vm<S> where S: VmDrop {
 }
 
 impl<S> SqGet<SqClosureInfo> for Vm<S> where S: VmDrop {
-    fn get_constrain(&self, idx: SqInteger, _: Option<u32>) -> SqGetResult<SqClosureInfo> {
+    fn get_constrain(&self, idx: SqInteger, _: Option<SqUnsignedInteger>) -> SqGetResult<SqClosureInfo> {
         let mut info = SqClosureInfo { name: None, args: vec![], src: None };
 
         self.get_closure_info(idx)
@@ -266,7 +266,7 @@ impl<S> SqGet<SqClosureInfo> for Vm<S> where S: VmDrop {
 }
 
 impl<S> SqGet<SqNativeClosureInfo> for Vm<S> where S: VmDrop {
-    fn get_constrain(&self, idx: SqInteger, _: Option<u32>) -> SqGetResult<SqNativeClosureInfo> {
+    fn get_constrain(&self, idx: SqInteger, _: Option<SqUnsignedInteger>) -> SqGetResult<SqNativeClosureInfo> {
         let mut info = SqNativeClosureInfo { name: None, arg_types: vec![] };
 
         self.get_closure_info(idx)
@@ -311,7 +311,7 @@ impl<S> SqGet<SqNativeClosureInfo> for Vm<S> where S: VmDrop {
 }
 
 impl<S> SqGet<DynSqVar> for Vm<S> where S: VmDrop {
-    fn get_constrain(&self, idx: SqInteger, max_depth: Option<u32>) -> SqGetResult<DynSqVar> {
+    fn get_constrain(&self, idx: SqInteger, max_depth: Option<SqUnsignedInteger>) -> SqGetResult<DynSqVar> {
         let sq_type = self.get_type(idx);
 
         // If container, do not expand

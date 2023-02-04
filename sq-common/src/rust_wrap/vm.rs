@@ -3,13 +3,18 @@ use std::marker::PhantomData;
 use std::ptr::{addr_of_mut, addr_of};
 use delegate::delegate;
 
+use crate::{error::*, sq_validate};
+use crate::util::cstr_to_string;
+
 use super::api::{
     self, VmRawApi, SQ_ERROR, SqCompilerErrorHandler, 
     SqFunction, SqReleaseHook, SQObject, sq_resetobject
 };
+use super::get::{SqGet, SqGetResult};
+use super::push::SqPush;
 use super::iter::{SqArrayIter, SqTableIter};
+use super::obj::SqObjectRef;
 use super::types::*;
-use crate::{error::*, sq_validate};
 
 
 /// Strongly-typed vm errors
@@ -109,6 +114,18 @@ pub struct SqStackInfo {
     pub line: Option<SqInteger>, 
 }
 
+/// SQVM  local variable
+#[derive(Clone, Debug)]
+pub struct SqLocalVar {
+    pub name: String,
+    pub val: DynSqVar,
+}
+
+/// SQVM local variable handle
+pub struct SqLocalVarHandle<'vm, S> where S: safety::VmDrop {
+    pub name: String,
+    pub handle: SqObjectRef<'vm, S>,
+}
 
 /// Struct for accessing raw api methods of the vm
 pub struct VmApi(api::HSQUIRRELVM);
@@ -491,7 +508,7 @@ impl<S> Vm<S> where S: safety::VmDrop {
     pub fn iter_array<T>(
         &self,
         idx: SqInteger,
-        max_depth: Option<u32>
+        max_depth: Option<SqUnsignedInteger>
     ) -> SqArrayIter<'_, S, T> {
         // Push a reference to an array to the stack top and a null iterator
         self.ref_idx(idx);
@@ -504,13 +521,220 @@ impl<S> Vm<S> where S: safety::VmDrop {
     pub fn iter_table<K, V>(
         &self,
         idx: SqInteger,
-        max_depth: Option<u32>
+        max_depth: Option<SqUnsignedInteger>
     ) -> SqTableIter<'_, S, K, V> {
         // Push a reference to an array to the stack top and a null iterator
         self.ref_idx(idx);
         self.api().push_null();
 
         SqTableIter { vm: self, max_depth, _type: PhantomData }
+    }
+
+    /// Set VM debug hook that will be called for each line and function call/return
+    /// 
+    /// In order to receive a `line` callback, is necessary 
+    /// to compile the scripts with the line informations. 
+    /// Without line informations activated, only the `call/return` callbacks will be invoked.
+    pub fn set_debug_hook<F>(&mut self, mut hook: F)
+    where
+        F: FnMut(DebugEventWithSrc, &Vm<safety::Friend>) + Send + 'static
+    {
+        todo!()
+        // FIXME:
+        // let debug_hook_glue = sq_closure!(
+        //     #[(vm_var = "vm")]
+        //     move |
+        //     event_type: SqInteger,
+        //     src: Option<String>,
+        //     line: SqInteger,
+        //     funcname: Option<String>
+        //     | {
+        //         let line_opt = if line > 0 { Some(line) } else { None };
+
+        //         let event = match char::from_u32(event_type as u32).unwrap() {
+        //             'l' => DebugEvent::Line(line),
+        //             'c' => DebugEvent::FnCall(funcname.unwrap_or_else(|| "??".into()), line_opt),
+        //             'r' => DebugEvent::FnRet(funcname.unwrap_or_else(|| "??".into()), line_opt),
+        //             e => panic!("unknown debug event: {e}"),
+        //         };
+
+        //         hook(DebugEventWithSrc { event, src }, vm);
+        //     }
+        // );
+
+        // <Self as SqPush<SqBoxedClosure>>::push(self, debug_hook_glue);
+
+        // unsafe {
+        //     self.api().setdebughook();
+        // }
+    }
+
+    /// The member 'func_id' of the returned SqFunctionInfo structure is a
+    /// unique identifier of the function; this can be useful to identify
+    /// a specific piece of squirrel code in an application like for instance a profiler.
+    /// this method will fail if the closure in the stack is a native C closure.
+    /// 
+    /// NOTE: Feels like legacy version of `get_stack_info`
+    pub fn get_function_info(&self, level: SqInteger) -> SqVmResult<SqFunctionInfo> {
+        let mut func_info = unsafe { std::mem::zeroed() };
+
+        sq_try! { self,
+            unsafe { self.api().getfunctioninfo(level, addr_of_mut!(func_info)) }
+        }?;
+
+        let name = unsafe { cstr_to_string(func_info.name) };
+        let src = unsafe { cstr_to_string(func_info.source) };
+
+        Ok(SqFunctionInfo {
+            func_id: func_info.funcid,
+            name: if name != "unknown" { Some(name) } else { None },
+            src_file: if src != "unknown" { Some(src) } else { None },
+        })
+    }
+
+    /// Retrieve the call stack informations of a certain `level` in the calls stack
+    pub fn get_stack_info(&self, level: SqUnsignedInteger) -> SqVmResult<SqStackInfo> {
+        let mut stack_info = unsafe { std::mem::zeroed() };
+
+        sq_try! { self, nothrow
+            unsafe { self.api().stackinfos(level as _, addr_of_mut!(stack_info)) }
+        }?;
+
+        let name = unsafe { cstr_to_string(stack_info.funcname) };
+        let src = unsafe { cstr_to_string(stack_info.source) };
+
+        Ok(SqStackInfo { 
+            funcname: if name != "unknown" { Some(name) } else { None },
+            src_file: if src != "NATIVE" { Some(src) } else { None },
+            line: if stack_info.line > 0 { Some(stack_info.line as SqInteger) } else { None }
+        })
+    }
+
+    /// Returns the name and value of a local variable given
+    /// stackframe and sequence in the stack.
+    /// 
+    /// Free variables are treated as local variables, and will be returned
+    /// as they would be at the base of the stack, just before the real local variable
+    /// 
+    /// Returns `None` if local on specified `idx` and `level` doesn't exist 
+    pub fn get_local(
+            &self,
+            level: SqUnsignedInteger,
+            idx: SqUnsignedInteger,
+            max_depth: Option<SqUnsignedInteger>,
+            ) -> SqGetResult<Option<SqLocalVar>> {
+        let ptr = unsafe { self.api().getlocal(level, idx) };
+        if ptr != 0 as _ {
+            let name = unsafe { cstr_to_string(ptr) };
+            let val = self.get_constrain(-1, max_depth)?;
+            self.pop(1);
+            Ok(Some(SqLocalVar{ name, val }))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Returns the name and handle of a local variable given
+    /// stackframe and sequence in the stack.
+    ///
+    /// Free variables are treated as local variables, and will be returned
+    /// as they would be at the base of the stack, just before the real local variable
+    ///
+    /// Returns `None` if local on specified `idx` and `level` doesn't exist
+    pub fn get_local_handle(
+            &self,
+            level: SqUnsignedInteger,
+            idx: SqUnsignedInteger
+    ) -> SqGetResult<Option<SqLocalVarHandle<'_, S>>> {
+        let ptr = unsafe { self.api().getlocal(level, idx) };
+        if ptr != 0 as _ {
+            let name = unsafe { cstr_to_string(ptr) };
+            let val = SqObjectRef::get(self, -1)?;
+            self.pop(1);
+            Ok(Some(SqLocalVarHandle { name, handle: val }))
+        } else {
+            Ok(None)
+        }
+    }
+
+    // TODO: Add typemask
+    
+    /// Bind rust native function to root table of SQVM
+    pub fn register_function(&self, name: &str, func: SqFunction) {
+        self.push_root_table();
+        self.push(name);
+        self.push(func);
+        self.new_slot(-3, false).expect("Failed to create slot in root table");
+        self.pop(1);
+    }
+
+    /// Bind rust native closure to root table of SQVM 
+    pub fn register_closure(&self, name: &str, closure: Box<SqFnClosure>) {
+        self.push_root_table();
+        self.push(name);
+        self.push(closure);
+        self.new_slot(-3, false).expect("Failed to create slot in root table");
+        self.pop(1);
+    }
+
+    /// Compile and arbitrary squirrel script
+    pub fn compile_closure(&self, script: String, src_file: String) -> SqCompilerResult<()> {
+
+        /// This handler will push SqCompilerError ptr to stack as userdata
+        extern "C" fn error_handler(
+            vm: api::HSQUIRRELVM,
+            desc: *const i8,
+            src: *const i8,
+            line: SqInteger,
+            column: SqInteger,
+        ) {
+            unsafe { 
+                // FIXME:
+                let err = Box::new(SqCompilerError::CompileError {
+                    line: line as _,
+                    column: column as _,
+                    description: cstr_to_string(desc),
+                    src_file: cstr_to_string(src),
+                });
+
+                let ptr = Box::leak(err) as *mut SqCompilerError;
+                Vm::from_handle(vm).push(ptr);
+            }
+        }
+
+        self.api().enable_debug_info(true);    
+        self.set_compiler_error_handler(Some(error_handler));
+        let compile_res = self.compile_string(script, src_file, true);
+        self.set_compiler_error_handler(None);
+
+        if compile_res.is_err() {
+            let err_box: SqUserPointer<SqCompilerError> = self.get(-1)?;
+
+            let err: Box<SqCompilerError> = unsafe {
+                Box::from_raw(err_box)
+            };
+
+            // Pop error
+            self.pop(1);
+
+            return Err(*err);
+        };
+        Ok(())
+    }
+
+    /// Call closure with specified argument count and return result.
+    ///
+    /// `depth` is depth of eager return value containers expansion.
+    ///
+    /// Returns [SqNull] if closure does not return anything.
+    pub fn closure_call(&self, argc: SqInteger, depth: Option<SqUnsignedInteger>) -> SqGetResult<DynSqVar> {
+        self.call_closure_api(argc, true, false)
+            .map_err(|e| e.into_stack_error("failed to call closure"))?;
+        let ret = self.get_constrain(-1, depth)?;
+
+        // Pop retval
+        self.pop(1);
+        Ok(ret)
     }
 
     // TODO: Make more api methods delegated through this macro
@@ -522,6 +746,7 @@ impl<S> Vm<S> where S: safety::VmDrop {
             pub fn get_type(&self, idx: SqInteger) -> SqType;
             pub fn pop(&self, count: SqInteger);
             pub fn ref_idx(&self, idx: SqInteger);
+            pub fn push_root_table(&self);
         }
     }    
 }

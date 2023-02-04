@@ -1,13 +1,14 @@
 
 use std::marker::PhantomData;
 
+use super::types::SqUnsignedInteger;
 use super::vm::{Vm, safety::VmDrop};
 use super::get::{SqGet, SqGetResult};
 
 /// Iterator on squirrel array
 pub struct SqArrayIter<'vm, S, T> where S: VmDrop {
     pub(super) vm: &'vm Vm<S>,
-    pub(super) max_depth: Option<u32>,
+    pub(super) max_depth: Option<SqUnsignedInteger>,
     pub(super) _type: PhantomData<T>,
 }
 
@@ -42,7 +43,7 @@ where
 /// Iterator on squirrel table
 pub struct SqTableIter<'vm, S, K, V> where S: VmDrop {
     pub(super) vm: &'vm Vm<S>,
-    pub(super) max_depth: Option<u32>,
+    pub(super) max_depth: Option<SqUnsignedInteger>,
     pub(super) _type: PhantomData<(K, V)>,
 }
 
