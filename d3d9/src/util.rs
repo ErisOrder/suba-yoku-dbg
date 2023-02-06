@@ -48,7 +48,6 @@ enum SrcCommands {
         prefix: Option<String>,
     },
 
-    // TODO: Add display-like command
     /// Display current function sources (determined based on received debug events)
     ///
     /// NOTE: Decompiled files may preserve definition order, but not line numbers
@@ -367,7 +366,7 @@ impl DebuggerFrontend {
             }.map(|(_, v)| v),
 
             DynSqVar::Array(v) => match key {
-                Number(idx) => v.get(*idx as usize),
+                Number(idx) => v.get(*idx),
                 _ => None
             }
             
@@ -610,7 +609,7 @@ impl DebuggerFrontend {
                     _ => return println!("not enough events received")
                 };
 
-                self.find_sources(spec, Some(window), spec.line.map(|l| l as usize));
+                self.find_sources(spec, Some(window), spec.line);
             }
 
             SrcCommands::Find { spec, window } => {
@@ -620,7 +619,7 @@ impl DebuggerFrontend {
                     Err(_) => return println!("failed to parse path"),
                 };
 
-                self.find_sources(&spec, Some(window), spec.line.map(|l| l as usize));
+                self.find_sources(&spec, Some(window), spec.line);
             }
 
             SrcCommands::List { files } => {
@@ -674,7 +673,7 @@ impl DebuggerFrontend {
             (false, None) => println!("nothing matches the definition: {spec}"),
             (false, Some((path, chunk))) => {
                 println!("{path}:");
-                Self::print_augmented_code_chunk(chunk, path.line.unwrap() as usize, cursor, window);
+                Self::print_augmented_code_chunk(chunk, path.line.unwrap(), cursor, window);
             },
             _ => ()
         }
@@ -1565,7 +1564,7 @@ impl SourceDB {
             } else { true })
             // Filter out by linenumber
             .filter(|file| if let Some(line) = &spec.line {
-                file.1.text.lines().count() >= *line as usize
+                file.1.text.lines().count() >= *line
             } else { true })
             // Get matching items from files  
             .flat_map(|file| { 
@@ -1578,7 +1577,7 @@ impl SourceDB {
                     })
                     // Filter by line number
                     .filter(|it| if let Some(line) = &spec.line {
-                        it.lines.contains(&(*line as usize))
+                        it.lines.contains(line)
                     } else { true })
                     .map(move |it| (file.clone(), it))                
             })
