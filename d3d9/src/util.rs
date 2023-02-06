@@ -169,7 +169,7 @@ enum Commands {
         /// Specify level of call stack.
         ///
         /// If not specified, print first found valid path.
-        level: Option<SqUnsignedInteger>,
+        level: Option<usize>,
 
         /// Depth of eager containers (table, array, etc.) expansion.
         /// 
@@ -386,7 +386,7 @@ impl DebuggerFrontend {
     fn examine(
         dbg: &dbg::SqDebugger, 
         path: &str,
-        mut level: Option<SqUnsignedInteger>, 
+        mut level: Option<usize>, 
         mut depth: usize
     ) {
         use SqPathToken::*;
@@ -483,7 +483,7 @@ impl DebuggerFrontend {
         dbg: &dbg::SqDebugger,
         debug: bool,
         buffer: Option<u32>,
-        depth: SqUnsignedInteger
+        depth: usize
     ) {
         if self.during_eval {
             println!("failed to evaluate: cannot evaluate during evaluation");
@@ -951,12 +951,12 @@ impl DebuggerFrontend {
                 let mut write_lock = last_event.write().unwrap();
                 match e.event {
                     DebugEvent::Line(l) => {
-                        write_lock.line = Some(l as SqUnsignedInteger);
+                        write_lock.line = Some(l as usize);
                         write_lock.file = e.src;
                     },
                     DebugEvent::FnCall(..) => *write_lock = e.into(),
                     DebugEvent::FnRet(_, l) => {
-                        write_lock.line = l.map(|l| l as SqUnsignedInteger);
+                        write_lock.line = l.map(|l| l as usize);
                         write_lock.file = None;
                         write_lock.func = None;
                     },
@@ -1138,7 +1138,7 @@ impl IntoListItems for &ScriptBuffers {
 #[derive(Debug, Logos)]
 enum SqPathToken<'lex> {   
     #[regex("[0-9]+", |lex| lex.slice().parse())]
-    Number(SqUnsignedInteger),
+    Number(usize),
     
     #[regex(r"\.")]
     Dot,
@@ -1166,7 +1166,7 @@ enum SqBrkSpecToken<'lex> {
     FilePath(&'lex str),
     
     #[regex("[0-9]+", |lex| lex.slice().parse())]
-    Number(SqUnsignedInteger),
+    Number(usize),
 
     #[regex("[a-zA-Z_][a-zA-Z0-9_]*", |lex| lex.slice(), priority = 2)]
     Ident(&'lex str),
@@ -1179,16 +1179,15 @@ enum SqBrkSpecToken<'lex> {
 struct BrkSpec {
     file: Option<String>,
     func: Option<String>,
-    line: Option<SqUnsignedInteger>,
+    line: Option<usize>,
 }
 
-// TODO: Map SqUnsignedInteger and SqInteger to usize and isize
 impl From<dbg::SqBreakpoint> for BrkSpec {
     fn from(value: dbg::SqBreakpoint) -> Self {
         Self {
             file: value.src_file,
             func: value.fn_name,
-            line: value.line.map(|l| l as SqUnsignedInteger),
+            line: value.line.map(|l| l as usize),
         }
     }
 }
@@ -1196,7 +1195,7 @@ impl From<dbg::SqBreakpoint> for BrkSpec {
 impl From<BrkSpec> for dbg::SqBreakpoint {
     fn from(value: BrkSpec) -> Self {
         Self {
-            line: value.line.map(|l| l as SqInteger),
+            line: value.line.map(|l| l as isize),
             fn_name: value.func,
             src_file: value.file,
             ..Self::new()
@@ -1210,19 +1209,19 @@ impl From<DebugEventWithSrc> for BrkSpec {
             DebugEvent::Line(ln) => Self {
                 file: value.src,
                 func: None,
-                line: Some(ln as SqUnsignedInteger),
+                line: Some(ln as usize),
             },
             DebugEvent::FnCall(func, ln) => Self {
                 // Actually this event's line is not a function definition,
                 // but the first function statement
-                line: ln.map(|l| l as SqUnsignedInteger),
+                line: ln.map(|l| l as usize),
                 file: value.src,
                 func: Some(func),
             },
             DebugEvent::FnRet(func, ln) => Self {
                 file: value.src,
                 func: Some(func),
-                line: ln.map(|l| l as SqUnsignedInteger),
+                line: ln.map(|l| l as usize),
             }
         }
     }

@@ -10,18 +10,9 @@ use super::api::*;
 use super::vm;
 
 /// Safe abstraction for SQFn
-pub type SqFnClosure = dyn FnMut(&vm::Vm<vm::safety::Friend>) -> SqInteger + Send; 
-
+pub type SqFnClosure = dyn FnMut(&vm::Vm<vm::safety::Friend>) -> isize + Send; 
 pub type SqBoxedClosure = Box<SqFnClosure>;
-
-/// Temporary re-export
-pub type SqInteger = SQInteger;
-
-/// For naming consistency
-pub type SqUnsignedInteger = SQUnsignedInteger;
-
 pub type SqUserPointer<T> = *mut T;
-
 pub type SqFloat = SQFloat;
 
 /// Squirrel associative container
@@ -172,7 +163,7 @@ pub struct SqNull;
 #[derive(Clone, Debug)]
 pub enum DynSqVar {
     Null,
-    Integer(SqInteger),
+    Integer(isize),
     Float(SqFloat),
     Bool(bool),
     String(String),

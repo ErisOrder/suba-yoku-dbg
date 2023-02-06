@@ -1,5 +1,5 @@
 use thiserror::Error;
-use crate::rust_wrap::types::{SqType, SqInteger, SqUnsignedInteger};
+use crate::rust_wrap::types::SqType;
 
 pub type SqVmResult<T> = std::result::Result<T, SqVmError>;
 
@@ -43,8 +43,8 @@ pub type SqCompilerResult<T> = Result<T, SqCompilerError>;
 pub enum SqCompilerError {
     #[error("compile error: {src_file}:{line}:{column}: {description}")]
     CompileError {
-        line: SqInteger,
-        column: SqInteger,
+        line: isize,
+        column: isize,
         description: String,
         src_file: String,
     },
@@ -87,7 +87,7 @@ pub enum SqDebugError {
     #[error("local {name} not found on level {lvl}")]
     LocalNotFound {
         name: String,
-        lvl: SqUnsignedInteger
+        lvl: usize
     },
     #[error(transparent)]
     StackError(#[from] SqStackError),

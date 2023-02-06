@@ -86,11 +86,11 @@ pub mod safety {
 #[derive(Clone, PartialEq, PartialOrd, Eq, Ord, Debug, Hash)]
 pub enum DebugEvent {
     /// Linenumber
-    Line(SqInteger),
+    Line(isize),
     /// Function name, linenumber
-    FnCall(String, Option<SqInteger>),
+    FnCall(String, Option<isize>),
     /// Function name, linenumber
-    FnRet(String, Option<SqInteger>),
+    FnRet(String, Option<isize>),
 }
 
 /// DebugEvent bundled with source path
@@ -112,7 +112,7 @@ pub struct SqFunctionInfo {
 pub struct SqStackInfo {
     pub funcname: Option<String>,
     pub src_file: Option<String>,
-    pub line: Option<SqInteger>, 
+    pub line: Option<isize>, 
 }
 
 impl std::fmt::Display for SqStackInfo {
@@ -222,7 +222,7 @@ impl<S> Vm<S> where S: safety::VmDrop {
 
     /// Pushes the object at the position `idx` of the source vm stack in the destination vm stack
     #[inline]
-    pub fn move_obj(&self, to: &Vm<safety::Safe>, idx: SqInteger) {
+    pub fn move_obj(&self, to: &Vm<safety::Safe>, idx: isize) {
         unsafe { self.api().move_object(to.api().handle(), idx) }
     }
 
@@ -246,7 +246,7 @@ impl<S> Vm<S> where S: safety::VmDrop {
     /// Pops a value from the stack and pushes it in the back
     /// of the array at the position `idx` in the stack.
     #[inline]
-    pub fn array_append(&self, idx: SqInteger) -> SqVmResult<()> {
+    pub fn array_append(&self, idx: isize) -> SqVmResult<()> {
         sq_try! { self, unsafe { self.api().arrayappend(idx) } }?;
         Ok(())
     }
@@ -258,7 +258,7 @@ impl<S> Vm<S> where S: safety::VmDrop {
     /// if `is_static = true` creates a static member.
     /// This parameter is only used if the target object is a class
     #[inline]
-    pub fn new_slot(&self, idx: SqInteger, is_static: bool) -> SqVmResult<()> {
+    pub fn new_slot(&self, idx: isize, is_static: bool) -> SqVmResult<()> {
         sq_try! { self, unsafe { self.api().newslot(idx, is_static as _) } }?;
         Ok(())
     }
@@ -269,7 +269,7 @@ impl<S> Vm<S> where S: safety::VmDrop {
     /// this call will invoke the delegation system like a normal assignment,
     /// it only works on tables, arrays and userdata.
     #[inline]
-    pub fn slot_set(&self, idx: SqInteger) -> SqVmResult<()> {
+    pub fn slot_set(&self, idx: isize) -> SqVmResult<()> {
         sq_try! { self, self.api().set_to_slot(idx) }?;
         Ok(())
     }
@@ -281,7 +281,7 @@ impl<S> Vm<S> where S: safety::VmDrop {
     /// It only works on tables, instances, arrays and classes.
     /// If the function fails nothing will be pushed in the stack.
     #[inline]
-    pub fn slot_get(&self, idx: SqInteger) -> SqVmResult<()> {
+    pub fn slot_get(&self, idx: isize) -> SqVmResult<()> {
         sq_try!{ self, self.api().get_from_slot(idx) }?;
         Ok(())
     }
@@ -293,7 +293,7 @@ impl<S> Vm<S> where S: safety::VmDrop {
     /// It only works on tables, instances, arrays and classes.
     /// If the function fails nothing will be pushed in the stack.
     #[inline]
-    pub fn slot_get_raw(&self, idx: SqInteger) -> SqVmResult<()> {
+    pub fn slot_get_raw(&self, idx: isize) -> SqVmResult<()> {
         sq_try!{ self, unsafe { self.api().rawget(idx) } }?;
         Ok(())
     }
@@ -311,7 +311,7 @@ impl<S> Vm<S> where S: safety::VmDrop {
     /// The function will fail when all slots have been iterated
     /// (see Tables and arrays manipulation)
     #[inline]
-    pub fn sq_iter_next(&self, idx: SqInteger) -> Option<()> {
+    pub fn sq_iter_next(&self, idx: isize) -> Option<()> {
         if unsafe { self.api().next(idx) } >= 0 {
             Some(())
         } else {
@@ -342,13 +342,13 @@ impl<S> Vm<S> where S: safety::VmDrop {
 
     /// Pushes class of a class instance at position `idx`
     #[inline]
-    pub fn get_instance_class(&self, idx: SqInteger) -> SqVmResult<()> {
+    pub fn get_instance_class(&self, idx: isize) -> SqVmResult<()> {
         sq_try! { self, unsafe { self.api().getclass(idx) } }?;
         Ok(())
     }
 
     /// Push info table of closure on stack index `idx` 
-    pub fn get_closure_info(&self, idx: SqInteger) -> SqVmResult<()> {
+    pub fn get_closure_info(&self, idx: isize) -> SqVmResult<()> {
         sq_try! { self, unsafe { self.api().closure_getinfos(idx) } }?;
         Ok(())
     }
@@ -360,14 +360,14 @@ impl<S> Vm<S> where S: safety::VmDrop {
     /// Then pushes the new cloned closure on top of the stack
     ///
     /// The cloned closure holds the environment object as weak reference.
-    pub fn bind_env(&self, idx: SqInteger) -> SqVmResult<()> {
+    pub fn bind_env(&self, idx: isize) -> SqVmResult<()> {
         sq_try!{ self, unsafe { self.api().bindenv(idx) } }?;
         Ok(())
     }
 
     /// Get a pointer to the string at the `idx` position in the stack.
     #[inline]
-    pub fn get_string(&self, idx: SqInteger) -> SqVmResult<*const u8> {
+    pub fn get_string(&self, idx: isize) -> SqVmResult<*const u8> {
         let mut ptr = std::ptr::null_mut();
         sq_try! { self,
             unsafe { self.api().getstring(idx, addr_of_mut!(ptr) as _) }
@@ -378,13 +378,13 @@ impl<S> Vm<S> where S: safety::VmDrop {
     /// Create a new native closure, pops `free_vars` values and set those
     /// as free variables of the new closure, and push the new closure in the stack
     #[inline]
-    pub fn new_closure(&self, f: SqFunction, free_vars: SqUnsignedInteger) {
+    pub fn new_closure(&self, f: SqFunction, free_vars: usize) {
         unsafe { self.api().newclosure(Some(f), free_vars) }
     }
 
     /// Get the value of the integer at the `idx` position in the stack.
     #[inline]
-    pub fn get_integer(&self, idx: SqInteger) -> SqVmResult<SqInteger> {
+    pub fn get_integer(&self, idx: isize) -> SqVmResult<isize> {
         let mut out = 0;
         sq_try! { self, nothrow unsafe { self.api().getinteger(idx,  addr_of_mut!(out)) }}?;
         Ok(out)
@@ -392,7 +392,7 @@ impl<S> Vm<S> where S: safety::VmDrop {
 
     /// Get the value of the bool at the `idx` position in the stack.
     #[inline]
-    pub fn get_bool(&self, idx: SqInteger) -> SqVmResult<bool> {
+    pub fn get_bool(&self, idx: isize) -> SqVmResult<bool> {
         let mut out = 0;
         sq_try! { self, nothrow unsafe { self.api().getbool(idx, addr_of_mut!(out)) }}?;
         Ok(out != 0)
@@ -400,7 +400,7 @@ impl<S> Vm<S> where S: safety::VmDrop {
 
     /// Gets the value of the float at the idx position in the stack.
     #[inline]
-    pub fn get_float(&self, idx: SqInteger) -> SqVmResult<SqFloat> {
+    pub fn get_float(&self, idx: isize) -> SqVmResult<SqFloat> {
         let mut out = 0.0;
         sq_try! { self, nothrow unsafe { self.api().getfloat(idx, addr_of_mut!(out)) }}?;
         Ok(out)
@@ -412,7 +412,7 @@ impl<S> Vm<S> where S: safety::VmDrop {
     /// * `ptr` - userpointer that will point to the userdata's payload
     /// * `type_tag` -  `SQUserPointer` that will store the userdata tag(see sq_settypetag).
     #[inline]
-    pub fn get_userdata(&self, idx: SqInteger) -> SqVmResult<(SqVoidUserPointer, SqVoidUserPointer)> {
+    pub fn get_userdata(&self, idx: isize) -> SqVmResult<(SqVoidUserPointer, SqVoidUserPointer)> {
         let mut ptr = std::ptr::null_mut();
         let mut typetag = std::ptr::null_mut();
         sq_try! { self, nothrow
@@ -423,7 +423,7 @@ impl<S> Vm<S> where S: safety::VmDrop {
 
     /// Get the value of the userpointer at the `idx` position in the stack.
     #[inline]
-    pub fn get_userpointer(&self, idx: SqInteger) -> SqVmResult<SqVoidUserPointer> {
+    pub fn get_userpointer(&self, idx: isize) -> SqVmResult<SqVoidUserPointer> {
         let mut ptr = std::ptr::null_mut();
         sq_try! { self, nothrow
             unsafe { self.api().getuserpointer(idx, addr_of_mut!(ptr)) }
@@ -434,7 +434,7 @@ impl<S> Vm<S> where S: safety::VmDrop {
     /// Returns the size of a value at the idx position in the stack
     /// Works only for arrays, tables, userdata, and strings
     #[inline]
-    pub fn get_size(&self, idx: SqInteger) -> SqVmResult<SqInteger> {
+    pub fn get_size(&self, idx: isize) -> SqVmResult<isize> {
         sq_try! { self,
             unsafe { self.api().getsize(idx) }
         }
@@ -442,7 +442,7 @@ impl<S> Vm<S> where S: safety::VmDrop {
 
     /// Sets a `hook` that will be called before release of __userdata__ at position `idx`
     #[inline]
-    pub fn set_release_hook(&self, idx: SqInteger, hook: SqReleaseHook) -> SqVmResult<()> {
+    pub fn set_release_hook(&self, idx: isize, hook: SqReleaseHook) -> SqVmResult<()> {
         sq_validate!(self.get_type(idx), SqType::UserData)?;
         unsafe { self.api().setreleasehook(idx, Some(hook)) };
         Ok(())
@@ -457,7 +457,7 @@ impl<S> Vm<S> where S: safety::VmDrop {
     /// If the execution of the function is suspended through sq_suspendvm(),
     /// the closure and the arguments will not be automatically popped from the stack.
     #[inline]
-    pub fn call_closure_api(&self, params: SqInteger, retval: bool, raise_error: bool) -> SqVmResult<()> {
+    pub fn call_closure_api(&self, params: isize, retval: bool, raise_error: bool) -> SqVmResult<()> {
         sq_try! { self,
             unsafe { self.api().call(params, retval as _, raise_error as _) }
         }?;
@@ -497,7 +497,7 @@ impl<S> Vm<S> where S: safety::VmDrop {
 
     /// Gets an object (or it's pointer) from the stack and stores it in a object handler.
     #[inline]
-    pub fn get_stack_obj(&self, idx: SqInteger) -> SqVmResult<SQObject> {
+    pub fn get_stack_obj(&self, idx: isize) -> SqVmResult<SQObject> {
         let mut obj = Self::obj_init();
         sq_try! { self,
             unsafe { self.api().getstackobj(idx, addr_of_mut!(obj)) }
@@ -520,8 +520,8 @@ impl<S> Vm<S> where S: safety::VmDrop {
     /// Get rust iterator to squirrel array at index `idx`
     pub fn iter_array<T>(
         &self,
-        idx: SqInteger,
-        max_depth: Option<SqUnsignedInteger>
+        idx: isize,
+        max_depth: Option<usize>
     ) -> SqArrayIter<'_, S, T> {
         // Push a reference to an array to the stack top and a null iterator
         self.ref_idx(idx);
@@ -533,8 +533,8 @@ impl<S> Vm<S> where S: safety::VmDrop {
     /// Get rust iterator to squirrel table at index `idx`
     pub fn iter_table<K, V>(
         &self,
-        idx: SqInteger,
-        max_depth: Option<SqUnsignedInteger>
+        idx: isize,
+        max_depth: Option<usize>
     ) -> SqTableIter<'_, S, K, V> {
         // Push a reference to an array to the stack top and a null iterator
         self.ref_idx(idx);
@@ -555,9 +555,9 @@ impl<S> Vm<S> where S: safety::VmDrop {
         let debug_hook_glue = sq_closure!(
             #[(vm_var = "vm", outer_crate = "crate")]
             move |
-            event_type: SqInteger,
+            event_type: isize,
             src: Option<String>,
-            line: SqInteger,
+            line: isize,
             funcname: Option<String>
             | {
                 let line_opt = if line > 0 { Some(line) } else { None };
@@ -586,7 +586,7 @@ impl<S> Vm<S> where S: safety::VmDrop {
     /// this method will fail if the closure in the stack is a native C closure.
     /// 
     /// NOTE: Feels like legacy version of `get_stack_info`
-    pub fn get_function_info(&self, level: SqInteger) -> SqVmResult<SqFunctionInfo> {
+    pub fn get_function_info(&self, level: isize) -> SqVmResult<SqFunctionInfo> {
         let mut func_info = unsafe { std::mem::zeroed() };
 
         sq_try! { self,
@@ -604,7 +604,7 @@ impl<S> Vm<S> where S: safety::VmDrop {
     }
 
     /// Retrieve the call stack informations of a certain `level` in the calls stack
-    pub fn get_stack_info(&self, level: SqUnsignedInteger) -> SqVmResult<SqStackInfo> {
+    pub fn get_stack_info(&self, level: usize) -> SqVmResult<SqStackInfo> {
         let mut stack_info = unsafe { std::mem::zeroed() };
 
         sq_try! { self, nothrow
@@ -617,7 +617,7 @@ impl<S> Vm<S> where S: safety::VmDrop {
         Ok(SqStackInfo { 
             funcname: if name != "unknown" { Some(name) } else { None },
             src_file: if src != "NATIVE" { Some(src) } else { None },
-            line: if stack_info.line > 0 { Some(stack_info.line as SqInteger) } else { None }
+            line: if stack_info.line > 0 { Some(stack_info.line as isize) } else { None }
         })
     }
 
@@ -630,9 +630,9 @@ impl<S> Vm<S> where S: safety::VmDrop {
     /// Returns `None` if local on specified `idx` and `level` doesn't exist 
     pub fn get_local(
             &self,
-            level: SqUnsignedInteger,
-            idx: SqUnsignedInteger,
-            max_depth: Option<SqUnsignedInteger>,
+            level: usize,
+            idx: usize,
+            max_depth: Option<usize>,
             ) -> SqGetResult<Option<SqLocalVar>> {
         let ptr = unsafe { self.api().getlocal(level, idx) };
         if ptr != 0 as _ {
@@ -654,8 +654,8 @@ impl<S> Vm<S> where S: safety::VmDrop {
     /// Returns `None` if local on specified `idx` and `level` doesn't exist
     pub fn get_local_handle(
             &self,
-            level: SqUnsignedInteger,
-            idx: SqUnsignedInteger
+            level: usize,
+            idx: usize
     ) -> SqGetResult<Option<SqLocalVarHandle<'_, S>>> {
         let ptr = unsafe { self.api().getlocal(level, idx) };
         if ptr != 0 as _ {
@@ -696,8 +696,8 @@ impl<S> Vm<S> where S: safety::VmDrop {
             vm: api::HSQUIRRELVM,
             desc: *const i8,
             src: *const i8,
-            line: SqInteger,
-            column: SqInteger,
+            line: isize,
+            column: isize,
         ) {
             unsafe { 
                 // FIXME:
@@ -738,7 +738,7 @@ impl<S> Vm<S> where S: safety::VmDrop {
     /// `depth` is depth of eager return value containers expansion.
     ///
     /// Returns [SqNull] if closure does not return anything.
-    pub fn closure_call(&self, argc: SqInteger, depth: Option<SqUnsignedInteger>) -> SqGetResult<DynSqVar> {
+    pub fn closure_call(&self, argc: isize, depth: Option<usize>) -> SqGetResult<DynSqVar> {
         self.call_closure_api(argc, true, false)
             .map_err(|e| e.into_stack_error("failed to call closure"))?;
         let ret = self.get_constrain(-1, depth)?;
@@ -754,9 +754,9 @@ impl<S> Vm<S> where S: safety::VmDrop {
             /// Get the type of the value at the position `idx` in the stack
             #[into]
             #[call(get_obj_type)]
-            pub fn get_type(&self, idx: SqInteger) -> SqType;
-            pub fn pop(&self, count: SqInteger);
-            pub fn ref_idx(&self, idx: SqInteger);
+            pub fn get_type(&self, idx: isize) -> SqType;
+            pub fn pop(&self, count: isize);
+            pub fn ref_idx(&self, idx: isize);
             pub fn push_root_table(&self);
         }
     }    
@@ -764,7 +764,7 @@ impl<S> Vm<S> where S: safety::VmDrop {
 
 impl Vm<safety::Safe> {
     /// Creates a new instance of a squirrel VM that consists in a new execution stack.
-    pub fn open(initial_stack_size: SqInteger) -> Self {
+    pub fn open(initial_stack_size: isize) -> Self {
         let handle = VmApi::open(initial_stack_size);
         Self {
             api: VmApi(handle),

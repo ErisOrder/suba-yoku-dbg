@@ -22,7 +22,7 @@ pub enum ExecState {
 }
 
 /// Specification of local to be captured (name, level)
-pub type SqCaptureLocal = (String, SqUnsignedInteger);
+pub type SqCaptureLocal = (String, usize);
 
 /// Description of script
 pub struct SqScriptDesc {
@@ -30,7 +30,7 @@ pub struct SqScriptDesc {
     capture: Vec<SqCaptureLocal>,
     script: String,
     /// Return value expansion depth
-    depth: SqUnsignedInteger,
+    depth: usize,
     debug: bool,
 }
 
@@ -39,7 +39,7 @@ pub enum DebugMsg {
     Backtrace,
     Trace,
     /// Level, Depth
-    Locals(Option<SqUnsignedInteger>, SqUnsignedInteger),
+    Locals(Option<usize>, usize),
     Eval(SqScriptDesc),
 }
 
@@ -47,7 +47,7 @@ pub enum DebugMsg {
 #[derive(Clone, Debug)]
 pub struct SqLocalVarWithLvl {
     pub var: SqLocalVar,
-    pub lvl: SqUnsignedInteger,
+    pub lvl: usize,
 }
 
 impl std::fmt::Display for DebugEventWithSrc {
@@ -92,7 +92,7 @@ impl DebugResp {
 /// Struct for holding breakpoint data. At least 1 condition field must be specified for it to work 
 #[derive(Clone, PartialEq, PartialOrd, Eq, Ord, Debug, Hash, Serialize, Deserialize)]
 pub struct SqBreakpoint {
-    pub line: Option<SqInteger>,
+    pub line: Option<isize>,
     pub fn_name: Option<String>,
     pub src_file: Option<String>,
     pub enabled: bool,
@@ -464,8 +464,8 @@ impl SqDebugger
     ///   - 3.. - and so on
     pub fn get_locals(
         &self,
-        lvl: Option<SqUnsignedInteger>,
-        depth: SqUnsignedInteger
+        lvl: Option<usize>,
+        depth: usize
     ) -> SqDebugResult<Vec<SqLocalVarWithLvl>> {
         self.sender.send(DebugMsg::Locals(lvl, depth)).unwrap();
         
@@ -492,7 +492,7 @@ impl SqDebugger
         &self,
         script: String,
         capture_locals: Vec<SqCaptureLocal>,
-        depth: SqUnsignedInteger
+        depth: usize
     ) -> SqDebugResult<DynSqVar> {
         self.sender.send(DebugMsg::Eval(SqScriptDesc {
             capture: capture_locals, script, depth, debug: false
@@ -520,7 +520,7 @@ impl SqDebugger
         &self,
         script: String,
         capture_locals: Vec<SqCaptureLocal>,
-        depth: SqUnsignedInteger
+        depth: usize
     ) -> impl Fn() -> SqDebugResult<DynSqVar> {
         self.sender.send(DebugMsg::Eval(SqScriptDesc {
             capture: capture_locals, script, depth, debug: true

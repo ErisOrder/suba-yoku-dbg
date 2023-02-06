@@ -204,7 +204,7 @@ gen_hook! {
 
             vm.register_closure("TestAutoGen", sq_closure!(
             #[(print_args = true)] 
-            move |a: SqInteger| {
+            move |a: isize| {
                 xx += a;
                 debug!("Called autogen closure: {a} {}", xx);
             }));
@@ -232,19 +232,19 @@ fn register_test_functions(vm: &mut Vm<safety::Safe>) {
     vm.register_function("TestFunction", test_function);
     vm.register_function("TestFunction", test_function);
     #[sqfn]
-    fn test_function() -> SqInteger {
+    fn test_function() -> isize {
         777
     }
 
     vm.register_function("SingleArg", single_arg);
     #[sqfn]
-    fn single_arg(a: SqInteger) -> SqInteger {
+    fn single_arg(a: isize) -> isize {
         a
     }
 
     vm.register_function("TestArgs", test_args);
     #[sqfn]
-    fn test_args(a1: SqInteger, a2: SqInteger) -> SqInteger {
+    fn test_args(a1: isize, a2: isize) -> isize {
         a1 + a2
     }
     
@@ -268,13 +268,13 @@ fn register_test_functions(vm: &mut Vm<safety::Safe>) {
     
     vm.register_function("TestStaticArr", test_static_arr);
     #[sqfn]
-    fn test_static_arr(a: Vec<SqInteger>) -> SqInteger {
+    fn test_static_arr(a: Vec<isize>) -> isize {
         a.into_iter().sum()
     }
     
     vm.register_function("TestVarargs", test_varargs);
     #[sqfn(varargs = "varargs")]
-    fn test_varargs(_norm: DynSqVar) -> SqInteger {
+    fn test_varargs(_norm: DynSqVar) -> isize {
         varargs.len() as _
     }
     
@@ -328,14 +328,14 @@ fn register_test_functions(vm: &mut Vm<safety::Safe>) {
         }
 
         impl Indicator {
-            pub fn addx(&mut self, x: SqInteger) {
+            pub fn addx(&mut self, x: isize) {
                 self.0 += x
             }
         }
 
         let mut capt = Indicator(42);
 
-        sq_closure!(move |c: SqInteger| {
+        sq_closure!(move |c: isize| {
             debug!("called pushed closure: {}", capt.0);
             capt.addx(c);
         })

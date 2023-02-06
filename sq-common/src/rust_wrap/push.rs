@@ -70,11 +70,11 @@ impl<S> SqPush<bool> for Vm<S> where S: VmDrop {
     }
 }
 
-impl<S> SqPush<SqInteger> for Vm<S> where S: VmDrop {
+impl<S> SqPush<isize> for Vm<S> where S: VmDrop {
     type Output = ();
     
     #[inline]
-    fn push(&self, val: SqInteger) {
+    fn push(&self, val: isize) {
         self.api().push_integer(val);
     }
 }
@@ -144,7 +144,7 @@ impl<S> SqPush<SqBoxedClosure> for Vm<S> where S: VmDrop {
         let clos_box = Box::new(val); 
 
         #[allow(clippy::borrowed_box)]
-        extern "C" fn glue(hvm: HSQUIRRELVM) -> SqInteger {
+        extern "C" fn glue(hvm: HSQUIRRELVM) -> isize {
           
             let mut vm = unsafe { Vm::from_handle(hvm).into_friend() };
 
@@ -160,7 +160,7 @@ impl<S> SqPush<SqBoxedClosure> for Vm<S> where S: VmDrop {
             closure(&mut vm)
         }
 
-        extern "C" fn release_hook(ptr: SqVoidUserPointer, _: SqInteger) -> SqInteger {
+        extern "C" fn release_hook(ptr: SqVoidUserPointer, _: isize) -> isize {
             // Received ptr is pointer to pointer (of former box) to box
             unsafe { 
                 let closure_box: *mut SqBoxedClosure = std::ptr::read(ptr as _) ;
@@ -200,14 +200,14 @@ where
 impl<S, T> SqPush<Vec<T>> for Vm<S> 
 where 
     S: VmDrop, 
-    Vm<S>: SqPush<T> + SqPush<SqInteger> 
+    Vm<S>: SqPush<T> + SqPush<isize> 
 {
     type Output = SqPushResult; 
     
     fn push(&self, val: Vec<T>) -> Self::Output {
         self.new_array(val.len());
         for (index, elem) in val.into_iter().enumerate() {
-            self.push(index as SqInteger);
+            self.push(index as isize);
             self.push(elem).into_result()?;
             self.slot_set(-3)
                 .map_err(|e| e.into_stack_error("failed to set array slot"))?;

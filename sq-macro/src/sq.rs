@@ -290,7 +290,7 @@ pub fn sqfn_impl(
             #[allow(unreachable_code, unused_mut)]
             #original_vis extern "C" fn #original_name(
                 hvm: #outer::api::HSQUIRRELVM
-            ) -> #outer::SqInteger {
+            ) -> isize {
                 #imports
 
                 let #vm_ident = unsafe { Vm::from_handle(hvm).into_friend() };
@@ -311,7 +311,7 @@ pub fn sqfn_impl(
             quote! {
                 Box::new(#move_kw |
                     #vm_ident: &#outer::Vm<#outer::safety::Friend>
-                    | -> #outer::SqInteger {
+                    | -> isize {
                     #imports
 
                     #sq_fn_body_start

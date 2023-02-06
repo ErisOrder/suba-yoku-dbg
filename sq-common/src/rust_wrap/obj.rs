@@ -24,7 +24,7 @@ impl<'vm, S> SqObjectRef<'vm, S> where S: VmDrop {
     }
 
     /// Get a reference to object on the stack
-    pub fn get(vm: &'vm Vm<S>, idx: SqInteger) -> SqGetResult<Self> {
+    pub fn get(vm: &'vm Vm<S>, idx: isize) -> SqGetResult<Self> {
         let mut obj = vm.get_stack_obj(idx)
             .map_err(|e| e.into_stack_error("failed to get object handle"))?;
         vm.inc_ref(&mut obj);
