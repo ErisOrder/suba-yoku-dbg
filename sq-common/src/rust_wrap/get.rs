@@ -2,20 +2,11 @@ use indexmap::IndexMap;
 use std::hash::Hash;
 
 
+use crate::sq_validate;
 use crate::{error::*, util::cstr_to_string};
 use super::types::*;
 use super::vm::{Vm, safety::VmDrop};
 use super::push::{SqPush, IntoPushResult};
-
-// temp stub
-macro_rules! sq_validate {
-    ($check:expr, $($valid_type:path),+) => {
-        match $check {
-            $(| $valid_type )+ => Ok(()),
-            other => Err($crate::error::SqVmError::Other(None))
-        } 
-    }
-}
 
 pub type SqGetResult<T> = Result<T, SqStackError>;
 

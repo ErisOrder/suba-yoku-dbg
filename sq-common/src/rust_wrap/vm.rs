@@ -2,6 +2,7 @@ use std::cmp::Ordering;
 use std::marker::PhantomData;
 use std::ptr::{addr_of_mut, addr_of};
 use delegate::delegate;
+use sq_macro::sq_closure;
 
 use crate::{error::*, sq_validate};
 use crate::util::cstr_to_string;
@@ -114,6 +115,16 @@ pub struct SqStackInfo {
     pub line: Option<SqInteger>, 
 }
 
+impl std::fmt::Display for SqStackInfo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{src}:{func} ({ln})",
+            src = self.src_file.as_deref().unwrap_or("??"),
+            func = self.funcname.as_deref().unwrap_or("??"),
+            ln = self.line.map_or("??".into(), |l| l.to_string())
+        )
+    }
+}
+
 /// SQVM  local variable
 #[derive(Clone, Debug)]
 pub struct SqLocalVar {
@@ -144,8 +155,11 @@ impl<S> Drop for Vm<S> where S: safety::VmDrop {
 
 pub struct Vm<S> where S: safety::VmDrop  {
     api: VmApi,
-    safety: S
+    _safety: S
 }
+
+// Due to pointer in api
+unsafe impl<S> Send for Vm<S> where S: safety::VmDrop {}
 
 impl<S> Vm<S> where S: safety::VmDrop {
     /// Get underlying api
@@ -429,8 +443,7 @@ impl<S> Vm<S> where S: safety::VmDrop {
     /// Sets a `hook` that will be called before release of __userdata__ at position `idx`
     #[inline]
     pub fn set_release_hook(&self, idx: SqInteger, hook: SqReleaseHook) -> SqVmResult<()> {
-        // FIXME: Uncomment after
-        // sq_validate!(self.get_type(idx), SqType::UserData)?;
+        sq_validate!(self.get_type(idx), SqType::UserData)?;
         unsafe { self.api().setreleasehook(idx, Some(hook)) };
         Ok(())
     }
@@ -539,34 +552,32 @@ impl<S> Vm<S> where S: safety::VmDrop {
     where
         F: FnMut(DebugEventWithSrc, &Vm<safety::Friend>) + Send + 'static
     {
-        todo!()
-        // FIXME:
-        // let debug_hook_glue = sq_closure!(
-        //     #[(vm_var = "vm")]
-        //     move |
-        //     event_type: SqInteger,
-        //     src: Option<String>,
-        //     line: SqInteger,
-        //     funcname: Option<String>
-        //     | {
-        //         let line_opt = if line > 0 { Some(line) } else { None };
+        let debug_hook_glue = sq_closure!(
+            #[(vm_var = "vm", outer_crate = "crate")]
+            move |
+            event_type: SqInteger,
+            src: Option<String>,
+            line: SqInteger,
+            funcname: Option<String>
+            | {
+                let line_opt = if line > 0 { Some(line) } else { None };
 
-        //         let event = match char::from_u32(event_type as u32).unwrap() {
-        //             'l' => DebugEvent::Line(line),
-        //             'c' => DebugEvent::FnCall(funcname.unwrap_or_else(|| "??".into()), line_opt),
-        //             'r' => DebugEvent::FnRet(funcname.unwrap_or_else(|| "??".into()), line_opt),
-        //             e => panic!("unknown debug event: {e}"),
-        //         };
+                let event = match char::from_u32(event_type as u32).unwrap() {
+                    'l' => DebugEvent::Line(line),
+                    'c' => DebugEvent::FnCall(funcname.unwrap_or_else(|| "??".into()), line_opt),
+                    'r' => DebugEvent::FnRet(funcname.unwrap_or_else(|| "??".into()), line_opt),
+                    e => panic!("unknown debug event: {e}"),
+                };
 
-        //         hook(DebugEventWithSrc { event, src }, vm);
-        //     }
-        // );
+                hook(DebugEventWithSrc { event, src }, vm);
+            }
+        );
 
-        // <Self as SqPush<SqBoxedClosure>>::push(self, debug_hook_glue);
+        <Self as SqPush<SqBoxedClosure>>::push(self, debug_hook_glue);
 
-        // unsafe {
-        //     self.api().setdebughook();
-        // }
+        unsafe {
+            self.api().setdebughook();
+        }
     }
 
     /// The member 'func_id' of the returned SqFunctionInfo structure is a
@@ -757,7 +768,7 @@ impl Vm<safety::Safe> {
         let handle = VmApi::open(initial_stack_size);
         Self {
             api: VmApi(handle),
-            safety: safety::Safe
+            _safety: safety::Safe
         }
     }
 }
@@ -775,7 +786,7 @@ impl Vm<safety::Unsafe> {
     pub unsafe fn from_handle(handle: api::HSQUIRRELVM) -> Self {
         Self {
             api: VmApi(handle),
-            safety: safety::Unsafe,
+            _safety: safety::Unsafe,
         }
     }
     
@@ -787,7 +798,7 @@ impl Vm<safety::Unsafe> {
         std::mem::forget(self);
         Vm {
             api: VmApi(handle),
-            safety: safety::Safe,
+            _safety: safety::Safe,
         }
     }
     
@@ -800,7 +811,7 @@ impl Vm<safety::Unsafe> {
         std::mem::forget(self);
         Vm {
             api: VmApi(handle),
-            safety: safety::Friend,
+            _safety: safety::Friend,
         }
     }
 }

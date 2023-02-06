@@ -1,6 +1,6 @@
 use indexmap::IndexMap;
 
-use super::error::*;
+use crate::error::*;
 use super::types::*;
 use super::vm::{Vm, safety::VmDrop, SqVoidUserPointer};
 use super::get::SqGet;
@@ -105,6 +105,14 @@ impl<S> SqPush<&str> for Vm<S> where S: VmDrop {
     }
 }
 
+impl<S> SqPush<String> for Vm<S> where S: VmDrop {
+    type Output = ();
+    
+    #[inline]
+    fn push(&self, val: String) {
+        self.push(val.as_str());
+    }
+}
 
 impl<S> SqPush<SqUserData> for Vm<S> where S: VmDrop {
     type Output = ();

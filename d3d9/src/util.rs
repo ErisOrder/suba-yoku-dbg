@@ -1,4 +1,4 @@
-use sq_common::{*, dbg::{SqLocalVarWithLvl, SqBreakpoint}};
+use sq_common::{*, dbg::{SqLocalVarWithLvl, SqBreakpoint}, vm::{SqLocalVar, DebugEvent, DebugEventWithSrc}};
 use std::{
     sync::{atomic, Mutex, Arc, RwLock},
     fs::{File, read_dir}, rc::Rc,
@@ -154,7 +154,7 @@ enum Commands {
     Locals {
         /// Level of call stack. Can be found using backtrace.
         /// If not specified, print all
-        level: Option<u32>,
+        level: Option<usize>,
     },
 
     /// Print value of local variable
@@ -182,7 +182,7 @@ enum Commands {
         /// 
         /// - 3.. - and so on
         #[clap(short, long, default_value = "1")]  
-        depth: u32
+        depth: usize
     },
 
     /// Add new breakpoint
@@ -242,7 +242,7 @@ enum Commands {
         /// Depth of eager returned containers (table, array, etc.) expansion.
         /// Check `help examine` for more info.
         #[clap(short, long, default_value = "1")]
-        depth: u32
+        depth: usize
     },
 
     /// Add, remove, edit and view script buffers
@@ -360,7 +360,7 @@ impl DebuggerFrontend {
                 }
                 Number(idx) => {
                     map.iter().find(|(k, _)| {
-                        matches!(k, DynSqVar::Integer(i) if *i == *idx as i32)
+                        matches!(k, DynSqVar::Integer(i) if *i == *idx as isize)
                     })
                 }
                 _ => None,
@@ -388,7 +388,7 @@ impl DebuggerFrontend {
         dbg: &dbg::SqDebugger, 
         path: &str,
         mut level: Option<SqUnsignedInteger>, 
-        mut depth: u32
+        mut depth: usize
     ) {
         use SqPathToken::*;
         let segments: Result<Vec<SqPathToken>, ()> = SqPathToken::lexer(path)    
@@ -424,7 +424,7 @@ impl DebuggerFrontend {
         };
 
         // Add minimal length needed to match path
-        depth += seg_cnt as u32;
+        depth += seg_cnt;
         
         let path_seg = segments.iter().skip(segments.len() - seg_cnt);
         
@@ -1602,7 +1602,7 @@ impl SourceDB {
                 BrkSpec {
                     file: Some(file.iter_name().collect::<String>()),
                     func: Some(it.item.name()),
-                    line: Some(it.lines.start as u32),
+                    line: Some(it.lines.start),
                 },
                 &file.1.text[it.span.clone()]
             ))

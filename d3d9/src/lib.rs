@@ -9,8 +9,6 @@ mod wrappers;
 mod util;
 mod hooks;
 
-util_proc_macro::set_sqfn_paths!(sq_wrap_path = "sq_common");
-
 dylib_mitm::dylib_mitm!(
     proto_path = r"C:\Windows\SysWOW64\d3d9.dll",
     load_lib = r#" &{

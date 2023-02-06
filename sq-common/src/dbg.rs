@@ -1,14 +1,21 @@
 use std::{time::Duration, sync::{Arc, Mutex, MutexGuard}};
 use atomic::{Atomic, Ordering};
 use crossbeam::channel::{bounded, unbounded, Receiver, Sender};
+use indexmap::IndexMap;
 use serde::{Serialize, Deserialize};
-use crate::{rust_wrap::*, error::{SqDebugResult, SqDebugError}};
-use crate::raw_api::VmRawApi;
+
+use crate::error::{SqDebugResult, SqDebugError};
+use crate::rust_wrap::{
+    vm::{Vm, SqLocalVar, DebugEventWithSrc, DebugEvent, SqStackInfo, SqLocalVarHandle, safety},
+    types::*,
+    api::VmRawApi,
+    push::SqPush,
+};
 
 const RECV_TIMEOUT: Duration = Duration::from_secs(10);
 
 
-#[derive(Copy, Clone, PartialEq, PartialOrd, Eq, Ord, Debug, Hash)]
+#[derive(Copy, Clone, PartialEq, Debug)]
 pub enum ExecState {
     Running,
     Halted
@@ -37,7 +44,7 @@ pub enum DebugMsg {
 }
 
 /// SqLocalVar annotated with level
-#[derive(Clone, PartialEq, PartialOrd, Eq, Debug, Hash)]
+#[derive(Clone, Debug)]
 pub struct SqLocalVarWithLvl {
     pub var: SqLocalVar,
     pub lvl: SqUnsignedInteger,
@@ -192,6 +199,7 @@ impl BreakpointStore {
 
 type DebugEventBundle = (DebugEventWithSrc, Option<SqBreakpoint>);
 
+type SafeVm = Vm<safety::Safe>;
 /// SQ Debugger middleware (backend is debug hook closure)
 pub struct SqDebugger{
     /// State of execution, shared with hook
@@ -284,7 +292,7 @@ impl SqDebugger
                     DebugMsg::Backtrace => {
                         let mut bt = vec![];
 
-                        let stack_size = vm.call_stack_len() as u32;
+                        let stack_size = vm.api().call_stack_len() as usize;
 
                         for lvl in 1..stack_size {
                             if let Ok(info) = vm.get_stack_info(lvl) {
@@ -302,7 +310,7 @@ impl SqDebugger
                     }
 
                     DebugMsg::Locals(lvl_opt, depth) => 'locals: {
-                        let stack_size = vm.call_stack_len() as u32;
+                        let stack_size = vm.api().call_stack_len() as usize;
 
                         // Store all locals if level isn`t specified  
                         let lvl = if let Some(lvl) = lvl_opt { lvl } else { 1 };

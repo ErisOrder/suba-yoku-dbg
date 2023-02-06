@@ -1,5 +1,5 @@
 use thiserror::Error;
-use crate::{rust_wrap::{SqType, SqInteger}, SqUnsignedInteger};
+use crate::rust_wrap::types::{SqType, SqInteger, SqUnsignedInteger};
 
 pub type SqVmResult<T> = std::result::Result<T, SqVmError>;
 

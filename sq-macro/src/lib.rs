@@ -12,14 +12,6 @@ pub fn sqfn(
     sq::sqfn_impl(sq::SqFuncType::StaticFn(item, args))
 }
 
-/// Set sq_lib_path and sq_wrap_path
-#[proc_macro] 
-pub fn set_sqfn_paths(
-    args: TokenStream
-) -> TokenStream {
-    sq::sq_set_mod_impl(args)
-}
-
 /// Generate boxed squirrel closure  
 #[proc_macro] 
 pub fn sq_closure(
