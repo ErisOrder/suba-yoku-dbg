@@ -1,13 +1,13 @@
 [workspace]
 members = [
     "d3d9",
-	"util-proc-macro"
+    "sq-macro"
 ]
 
 [workspace.dependencies]
 squirrel2-kaleido-rs = { git = "https://github.com/nikvoid/squirrel2-kaleido-rs" }
 sq-common = { path = "sq-common" }
-util-proc-macro = { path = "util-proc-macro" }
+sq-macro = { path = "sq-macro" }
 anyhow = "1.0.66"
 libc = "0.2.137"
 pretty_env_logger = "0.4.0"

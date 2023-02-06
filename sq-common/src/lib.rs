@@ -3,8 +3,21 @@
 #![feature(concat_idents)]
 
 mod rust_wrap;
-pub mod raw_api;
+pub use rust_wrap::{  
+    vm::{self, Vm, safety},
+    get::{self, SqGet},
+    push::{self, SqPush, IntoPushResult},
+    obj::{self, SqObjectRef},
+    throw::{self, SqThrow},
+    iter,
+    api,
+    types::*
+};
+
+/// Re-export
+pub use indexmap::IndexMap;
+pub use sq_macro::*;
+
+mod util;
 pub mod dbg;
 pub mod error;
-pub use rust_wrap::*;
-

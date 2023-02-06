@@ -7,6 +7,8 @@ use syn::{
     bracketed, parenthesized, parse_quote
 };
 
+const OUTER_CRATE: &str = "sq_common";
+
 #[derive(Debug, FromMeta, Default)]
 pub struct SQFnMacroArgs {
     #[darling(default)]
@@ -14,32 +16,9 @@ pub struct SQFnMacroArgs {
     #[darling(default)]
     varargs: Option<Ident>,
     #[darling(default)]
-    sq_wrap_path: Option<String>,
-    #[darling(default)]
     print_args: bool,
-}
-
-#[derive(Debug, FromMeta)]
-pub struct SQSetModArgs {
     #[darling(default)]
-    sq_wrap_path: Option<String>,
-}
-
-static mut SQ_WRAPPER_MOD: Option<String> = None;
-
-pub fn sq_set_mod_impl(args: proc_macro::TokenStream) -> proc_macro::TokenStream {
-    let attr_args = parse_macro_input!(args as AttributeArgs);
-
-    let args = match SQSetModArgs::from_list(&attr_args) {
-        Ok(v) => v,
-        Err(e) => { return proc_macro::TokenStream::from(e.write_errors()); }
-    };
-
-    if let Some(s) = args.sq_wrap_path {
-        unsafe { SQ_WRAPPER_MOD = Some(s) }
-    }
-
-    quote! {}.into()
+    outer_crate: Option<String>,
 }
 
 pub enum SqFuncType {
@@ -130,15 +109,6 @@ pub fn sqfn_impl(
         },
     };
 
-    let sq_wrapper_mod = {
-        let wrapper_path = 
-        if let Some(ref s) = args.sq_wrap_path { s }
-        else if let Some(s) = unsafe { &SQ_WRAPPER_MOD } { s }
-        else { "sq_common" }; 
-        
-        Path::from_string(wrapper_path).expect("failed to parse sq wrapper path")
-    };
-
     let pub_vis = Visibility::from_string("pub").unwrap();
     let new_fn_ident = Ident::new("rust_fn", Span::call_site());
 
@@ -188,9 +158,16 @@ pub fn sqfn_impl(
 
     let arg_idx = 0..normal_args.len();
 
+    let outer_ident = Ident::new(args.outer_crate
+        .as_deref()
+        .unwrap_or(OUTER_CRATE), Span::call_site()
+    );
+    let outer: Path = parse_quote! { #outer_ident };
+    
+    
     let varargs = match args.varargs {
         Some(ident) => {
-            let arg = parse_quote! { mut #ident: Vec<#sq_wrapper_mod::DynSqVar> };
+            let arg = parse_quote! { mut #ident: Vec<#outer::DynSqVar> };
             match &mut item {
                 ItemSqFn::ItemFn(item) => item.sig.inputs.push(arg),
                 ItemSqFn::Closure(item) => {
@@ -219,7 +196,7 @@ pub fn sqfn_impl(
 
     let (vm_ident, vm_option) = match args.vm_var {
         Some(ident) => {
-            let arg = parse_quote!{ #ident: &#sq_wrapper_mod::FriendVm };
+            let arg = parse_quote!{ #ident: &#outer::Vm<#outer::safety::Friend> };
             match &mut item {
                 ItemSqFn::ItemFn(item) => item.sig.inputs.push(arg),
                 ItemSqFn::Closure(item) => {
@@ -238,14 +215,14 @@ pub fn sqfn_impl(
 
     let imports = quote! {
         use log::debug;
-        use #sq_wrapper_mod::*;
-        use #sq_wrapper_mod::raw_api::*;
-        use #sq_wrapper_mod::error::*;
+        use #outer::*;
+        use #outer::error::*;
+        use #outer::api::VmRawApi;
     };
 
     let sq_fn_body_start = quote! {
-        let top = #vm_ident.stack_top();
-        let norm_argc = #norm_argc as i32;
+        let top = #vm_ident.api().stack_top();
+        let norm_argc = #norm_argc as isize;
 
         // Stack layout (function with 2 args):
         // 1: this (bound env)
@@ -254,7 +231,7 @@ pub fn sqfn_impl(
         // technically, all functions has varargs by default
 
         #(  // normal (rust) args indexes: 2..2+norm_argc
-            let idx = #arg_idx as i32 + 2;
+            let idx = #arg_idx as isize + 2;
             let #normal_arg_idents: #normal_arg_types = match #vm_ident.get(idx) {
                 Ok(a) => a,
                 Err(e) => {
@@ -312,11 +289,11 @@ pub fn sqfn_impl(
         ItemSqFn::ItemFn(item) => quote! {
             #[allow(unreachable_code, unused_mut)]
             #original_vis extern "C" fn #original_name(
-                hvm: #sq_wrapper_mod::HSQUIRRELVM
-            ) -> #sq_wrapper_mod::SqInteger {
+                hvm: #outer::api::HSQUIRRELVM
+            ) -> isize {
                 #imports
 
-                let #vm_ident = unsafe { UnsafeVm::from_handle(hvm).into_friend() };
+                let #vm_ident = unsafe { Vm::from_handle(hvm).into_friend() };
 
                 #item
 
@@ -332,7 +309,9 @@ pub fn sqfn_impl(
             let move_kw = item_clos.capture;
             item_clos.capture = None;
             quote! {
-                Box::new(#move_kw |#vm_ident: &mut #sq_wrapper_mod::FriendVm| -> #sq_wrapper_mod::SqInteger {
+                Box::new(#move_kw |
+                    #vm_ident: &#outer::Vm<#outer::safety::Friend>
+                    | -> isize {
                     #imports
 
                     #sq_fn_body_start

@@ -1,4 +1,4 @@
-use sq_common::{*, dbg::{SqLocalVarWithLvl, SqBreakpoint}};
+use sq_common::{*, dbg::{SqLocalVarWithLvl, SqBreakpoint}, vm::{SqLocalVar, DebugEvent, DebugEventWithSrc}};
 use std::{
     sync::{atomic, Mutex, Arc, RwLock},
     fs::{File, read_dir}, rc::Rc,
@@ -48,7 +48,6 @@ enum SrcCommands {
         prefix: Option<String>,
     },
 
-    // TODO: Add display-like command
     /// Display current function sources (determined based on received debug events)
     ///
     /// NOTE: Decompiled files may preserve definition order, but not line numbers
@@ -154,7 +153,7 @@ enum Commands {
     Locals {
         /// Level of call stack. Can be found using backtrace.
         /// If not specified, print all
-        level: Option<u32>,
+        level: Option<usize>,
     },
 
     /// Print value of local variable
@@ -170,7 +169,7 @@ enum Commands {
         /// Specify level of call stack.
         ///
         /// If not specified, print first found valid path.
-        level: Option<SqUnsignedInteger>,
+        level: Option<usize>,
 
         /// Depth of eager containers (table, array, etc.) expansion.
         /// 
@@ -182,7 +181,7 @@ enum Commands {
         /// 
         /// - 3.. - and so on
         #[clap(short, long, default_value = "1")]  
-        depth: u32
+        depth: usize
     },
 
     /// Add new breakpoint
@@ -242,7 +241,7 @@ enum Commands {
         /// Depth of eager returned containers (table, array, etc.) expansion.
         /// Check `help examine` for more info.
         #[clap(short, long, default_value = "1")]
-        depth: u32
+        depth: usize
     },
 
     /// Add, remove, edit and view script buffers
@@ -360,14 +359,14 @@ impl DebuggerFrontend {
                 }
                 Number(idx) => {
                     map.iter().find(|(k, _)| {
-                        matches!(k, DynSqVar::Integer(i) if *i == *idx as i32)
+                        matches!(k, DynSqVar::Integer(i) if *i == *idx as isize)
                     })
                 }
                 _ => None,
             }.map(|(_, v)| v),
 
             DynSqVar::Array(v) => match key {
-                Number(idx) => v.get(*idx as usize),
+                Number(idx) => v.get(*idx),
                 _ => None
             }
             
@@ -387,8 +386,8 @@ impl DebuggerFrontend {
     fn examine(
         dbg: &dbg::SqDebugger, 
         path: &str,
-        mut level: Option<SqUnsignedInteger>, 
-        mut depth: u32
+        mut level: Option<usize>, 
+        mut depth: usize
     ) {
         use SqPathToken::*;
         let segments: Result<Vec<SqPathToken>, ()> = SqPathToken::lexer(path)    
@@ -424,7 +423,7 @@ impl DebuggerFrontend {
         };
 
         // Add minimal length needed to match path
-        depth += seg_cnt as u32;
+        depth += seg_cnt;
         
         let path_seg = segments.iter().skip(segments.len() - seg_cnt);
         
@@ -484,7 +483,7 @@ impl DebuggerFrontend {
         dbg: &dbg::SqDebugger,
         debug: bool,
         buffer: Option<u32>,
-        depth: SqUnsignedInteger
+        depth: usize
     ) {
         if self.during_eval {
             println!("failed to evaluate: cannot evaluate during evaluation");
@@ -610,7 +609,7 @@ impl DebuggerFrontend {
                     _ => return println!("not enough events received")
                 };
 
-                self.find_sources(spec, Some(window), spec.line.map(|l| l as usize));
+                self.find_sources(spec, Some(window), spec.line);
             }
 
             SrcCommands::Find { spec, window } => {
@@ -620,7 +619,7 @@ impl DebuggerFrontend {
                     Err(_) => return println!("failed to parse path"),
                 };
 
-                self.find_sources(&spec, Some(window), spec.line.map(|l| l as usize));
+                self.find_sources(&spec, Some(window), spec.line);
             }
 
             SrcCommands::List { files } => {
@@ -674,7 +673,7 @@ impl DebuggerFrontend {
             (false, None) => println!("nothing matches the definition: {spec}"),
             (false, Some((path, chunk))) => {
                 println!("{path}:");
-                Self::print_augmented_code_chunk(chunk, path.line.unwrap() as usize, cursor, window);
+                Self::print_augmented_code_chunk(chunk, path.line.unwrap(), cursor, window);
             },
             _ => ()
         }
@@ -952,12 +951,12 @@ impl DebuggerFrontend {
                 let mut write_lock = last_event.write().unwrap();
                 match e.event {
                     DebugEvent::Line(l) => {
-                        write_lock.line = Some(l as SqUnsignedInteger);
+                        write_lock.line = Some(l as usize);
                         write_lock.file = e.src;
                     },
                     DebugEvent::FnCall(..) => *write_lock = e.into(),
                     DebugEvent::FnRet(_, l) => {
-                        write_lock.line = l.map(|l| l as SqUnsignedInteger);
+                        write_lock.line = l.map(|l| l as usize);
                         write_lock.file = None;
                         write_lock.func = None;
                     },
@@ -1139,7 +1138,7 @@ impl IntoListItems for &ScriptBuffers {
 #[derive(Debug, Logos)]
 enum SqPathToken<'lex> {   
     #[regex("[0-9]+", |lex| lex.slice().parse())]
-    Number(SqUnsignedInteger),
+    Number(usize),
     
     #[regex(r"\.")]
     Dot,
@@ -1167,7 +1166,7 @@ enum SqBrkSpecToken<'lex> {
     FilePath(&'lex str),
     
     #[regex("[0-9]+", |lex| lex.slice().parse())]
-    Number(SqUnsignedInteger),
+    Number(usize),
 
     #[regex("[a-zA-Z_][a-zA-Z0-9_]*", |lex| lex.slice(), priority = 2)]
     Ident(&'lex str),
@@ -1180,16 +1179,15 @@ enum SqBrkSpecToken<'lex> {
 struct BrkSpec {
     file: Option<String>,
     func: Option<String>,
-    line: Option<SqUnsignedInteger>,
+    line: Option<usize>,
 }
 
-// TODO: Map SqUnsignedInteger and SqInteger to usize and isize
 impl From<dbg::SqBreakpoint> for BrkSpec {
     fn from(value: dbg::SqBreakpoint) -> Self {
         Self {
             file: value.src_file,
             func: value.fn_name,
-            line: value.line.map(|l| l as SqUnsignedInteger),
+            line: value.line.map(|l| l as usize),
         }
     }
 }
@@ -1197,7 +1195,7 @@ impl From<dbg::SqBreakpoint> for BrkSpec {
 impl From<BrkSpec> for dbg::SqBreakpoint {
     fn from(value: BrkSpec) -> Self {
         Self {
-            line: value.line.map(|l| l as SqInteger),
+            line: value.line.map(|l| l as isize),
             fn_name: value.func,
             src_file: value.file,
             ..Self::new()
@@ -1211,19 +1209,19 @@ impl From<DebugEventWithSrc> for BrkSpec {
             DebugEvent::Line(ln) => Self {
                 file: value.src,
                 func: None,
-                line: Some(ln as SqUnsignedInteger),
+                line: Some(ln as usize),
             },
             DebugEvent::FnCall(func, ln) => Self {
                 // Actually this event's line is not a function definition,
                 // but the first function statement
-                line: ln.map(|l| l as SqUnsignedInteger),
+                line: ln.map(|l| l as usize),
                 file: value.src,
                 func: Some(func),
             },
             DebugEvent::FnRet(func, ln) => Self {
                 file: value.src,
                 func: Some(func),
-                line: ln.map(|l| l as SqUnsignedInteger),
+                line: ln.map(|l| l as usize),
             }
         }
     }
@@ -1565,7 +1563,7 @@ impl SourceDB {
             } else { true })
             // Filter out by linenumber
             .filter(|file| if let Some(line) = &spec.line {
-                file.1.text.lines().count() >= *line as usize
+                file.1.text.lines().count() >= *line
             } else { true })
             // Get matching items from files  
             .flat_map(|file| { 
@@ -1578,7 +1576,7 @@ impl SourceDB {
                     })
                     // Filter by line number
                     .filter(|it| if let Some(line) = &spec.line {
-                        it.lines.contains(&(*line as usize))
+                        it.lines.contains(line)
                     } else { true })
                     .map(move |it| (file.clone(), it))                
             })
@@ -1602,7 +1600,7 @@ impl SourceDB {
                 BrkSpec {
                     file: Some(file.iter_name().collect::<String>()),
                     func: Some(it.item.name()),
-                    line: Some(it.lines.start as u32),
+                    line: Some(it.lines.start),
                 },
                 &file.1.text[it.span.clone()]
             ))
